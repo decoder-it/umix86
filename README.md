@@ -293,3 +293,47 @@ Open <http://127.0.0.1:8080/>. `run.sh` boots the floppy on stdio instead.
 - On a Commodore PC-III use a 360 KB image; do not write a 1.44 MB image to a
   360 KB drive.
 - Keep `UMIX.SYS` from the same build as the boot floppy.
+
+## 9. Build and required tools
+
+### Required tools
+
+- **nasm** (`nasm -f bin`) — assembles the boot sector and the overlays
+- **Python 3.8+** — image builders, the serial bridge, the upload/TFTP clients
+  (standard library only; no extra packages)
+- **QEMU** (`qemu-system-i386`) — optional, to run without a real PC
+- **A null-modem serial cable** — optional, for serial terminals and the web on
+  real hardware
+
+### Build
+
+```sh
+./build.sh
+UMIX_MUX=1 python3 tools/mkfat.py
+```
+
+`build.sh` produces:
+
+```
+build/boot.bin          512-byte boot sector
+build/kernel.bin        64 KB kernel (128 sectors)
+build/umix86.img        512-byte boot + 64 KB kernel (rawrite/FDIMAGE)
+build/umix86-360.img    360 KB boot floppy (QEMU/Gotek)
+build/umix.sys          shell/editor/BASIC/JCL overlay
+build/tcp.sys           TCP/IP + HTTP overlay (optional)
+build/api.sys           JSON API overlay
+build/chat.sys          1-byte CHAT.SYS stub
+build/hello1.sys        demo programs
+build/hello2.sys
+build/spin.sys
+```
+
+`mkfat.py` then produces:
+
+```
+build/testc.img         21 MB FAT16 C: volume: UMIX.SYS, API.SYS,
+                        STARTUP.JCL, the guide pages and the demos
+```
+
+To run on a real PC, write `build/umix86-360.img` to a 360 KB floppy and copy
+the C: files to a FAT12/16 volume. Nothing else is required.
