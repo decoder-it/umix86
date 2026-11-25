@@ -1,0 +1,48 @@
+<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>UMIX/86 chat</title><style>*{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;font:14px/1.4 monospace;background:#111;color:#ddd}header,footer{padding:8px 12px;background:#1a1a1a}header{display:flex;gap:12px;border-bottom:1px solid #333}footer{border-top:1px solid #333}h1{font-size:14px;margin:0;color:#7da;flex:1}#st{font-size:12px;color:#eb6}main{flex:1;display:flex;min-height:0}#log{flex:1;overflow:auto;padding:8px 12px}#log div{word-break:break-word;white-space:pre-wrap}i{color:#678;font-style:normal;margin-right:8px}.sys{color:#7da}aside{width:150px;border-left:1px solid #333;padding:8px 10px;overflow:auto;color:#8bf}aside b{display:block;font-size:11px;color:#678;font-weight:400}aside span{display:block}form{display:flex;gap:8px;margin:0}input,button{font:inherit;color:inherit;background:#222;border:1px solid #444;border-radius:4px;padding:6px 10px}input{flex:1;min-width:0}input:focus{outline:0;border-color:#7da}.p{background:#264;border-color:#264;color:#fff}[hidden]{display:none}</style>
+<header><h1>UMIX/86 chat</h1><span id=st></span></header><main><div id=log></div><aside><b>USERS</b><div id=u></div></aside></main><footer><form id=j><input id=n maxlength=9 placeholder="nick (2-9 chars)" autocomplete=off><button class=p>Join</button></form><form id=s hidden><input id=m maxlength=50 placeholder="message (max 50)" autocomplete=off><button class=p>Send</button><button type=button id=lv>Leave</button></form></footer>
+<script>
+let tok,since=0,t=0,q=Promise.resolve();
+const $=i=>document.getElementById(i),L=$('log'),ser=f=>q=q.then(f,f),st=s=>$('st').textContent=s||'',
+view=o=>{$('j').hidden=o;$('s').hidden=!o;$(o?'m':'n').focus()},
+users=a=>$('u').replaceChildren(...a.map(n=>{const s=document.createElement('span');s.textContent=n;return s}));
+async function api(m,p,b){
+const r=await fetch(p,{method:m,headers:{'Content-Type':'application/json'},body:b&&JSON.stringify(b)}),x=await r.text();let j;
+try{j=JSON.parse(x)}catch{j={error:x.trim()}}
+if(!r.ok){const e=Error(j.error||'HTTP '+r.status);e.status=r.status;throw e}
+return j}
+function add(r){
+const k=L.scrollHeight-L.scrollTop-L.clientHeight<40;
+for(const[s,c='',n]of r){
+const d=document.createElement('div');d.className=c;
+if(n!=null){const i=document.createElement('i');i.textContent=n;d.append(i)}
+d.append(s);L.append(d)}
+while(L.childElementCount>300)L.firstChild.remove();
+if(k)L.scrollTop=L.scrollHeight}
+async function tick(f){
+if(!tok||document.hidden&&!f)return;
+try{
+const m=await api('GET','/api/chat/messages/'+since);
+add((m.messages||[]).map(x=>[x.text,'',x.seq]));since=m.latest;
+if(f||t++%3==0){const u=await api('GET','/api/chat');users(u.nicks.concat(u.api))}
+st()}catch(e){
+st(e.message);
+if(e.status==400){tok=null;view(0);st('token expired - join again')}}}
+$('j').onsubmit=e=>{
+e.preventDefault();
+const n=$('n').value.trim();if(!n)return st('nickname?');
+ser(async()=>{try{
+tok=(await api('POST','/api/chat/join',{nick:n})).token;since=t=0;view(1);st();
+add([['joined as '+n.toUpperCase(),'sys']]);
+await tick(1)}catch(e){st(e.message)}})};
+$('s').onsubmit=e=>{
+e.preventDefault();
+const m=$('m').value;
+m&&ser(async()=>{try{
+await api('POST','/api/chat/send',{token:tok,text:m});
+$('m').value='';await tick(1)}catch(e){st(e.message)}})};
+$('lv').onclick=()=>ser(async()=>{
+await api('DELETE','/api/chat/join/'+tok).catch(()=>0);
+tok=null;view(0);users([]);st();add([['left','sys']])});
+(function l(){ser(tick).finally(()=>setTimeout(l,2000))})();
+document.onvisibilitychange=()=>document.hidden||ser(()=>tick(1))
+</script>

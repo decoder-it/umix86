@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>UMIX/86 API</title>
+<link rel="icon" href="data:,">
+<style>
+body{font:13px/1.4 monospace;background:#111;color:#ddd;margin:12px}
+h1{font-size:15px;color:#6cf;margin:0 0 8px}
+input,select,textarea,button{font:inherit;background:#1b1b1b;color:#ddd;border:1px solid #444;padding:2px}
+textarea{width:100%;height:2.8em;box-sizing:border-box}
+button{cursor:pointer} button:hover{background:#333}
+#q button,#j button{margin:1px}
+#st{margin:6px 0;color:#8f8}
+pre#out{white-space:pre-wrap;background:#000;border:1px solid #333;padding:8px;min-height:8em}
+.row{margin:4px 0}
+</style></head><body>
+<h1>UMIX/86 API explorer</h1>
+<div class="row"><a href="chat.htm" style="color:#6cf">Open Chat</a></div>
+<div class="row">
+<select id="m"><option>GET</option><option>POST</option><option>DELETE</option></select>
+<input id="u" size="28" value="/api/system">
+<button onclick="send()">Send</button>
+<button onclick="send('/api/jobs','GET')">Jobs list</button>
+</div>
+<div class="row"><textarea id="b" placeholder="POST body (JSON). Routes are registered from the guest shell: API ROUTE /api/name FILE.BAS"></textarea></div>
+<div id="q" class="row"></div>
+<div id="j" class="row"></div>
+<div class="row">job <input id="ji" size="4" value="1">
+<button onclick="jr('')">detail</button>
+<button onclick="jr('/result')">result</button>
+<button onclick="jd()">cancel</button>
+</div>
+<div id="st"></div><pre id="out"></pre>
+<script>
+var G=["api","system","tasks","memory","who","whoami","ps","users","speed","time","version","status","chat","apps","routes","jobs","hello","demo","echo"];
+var JB=[["prime 1000",'{"app":"prime","params":{"limit":1000}}'],
+["sort list",'{"app":"sort","params":{"values":["apple","pie","banana"]}}'],
+["crc hello",'{"app":"crc16","params":{"data":"hello"}}']];
+var Q=document.getElementById("q"),J=document.getElementById("j");
+function el(t,x){var e=document.createElement(t);e.textContent=x;return e}
+G.forEach(function(x){var b=el("button",x);b.onclick=function(){send("/api/"+x,"GET")};Q.appendChild(b)});
+JB.forEach(function(x){var b=el("button",x[0]);b.onclick=function(){send("/api/jobs","POST",x[1])};J.appendChild(b)});
+function jr(s){send("/api/jobs/"+document.getElementById("ji").value+s,"GET")}
+function jd(){send("/api/jobs/"+document.getElementById("ji").value,"DELETE")}
+var B=0;
+function send(u,m,body){
+ if(B)return;
+ var st=document.getElementById("st"),o=document.getElementById("out");
+ if(typeof u=="string"){document.getElementById("u").value=u;document.getElementById("m").value=m}
+ if(typeof body=="string")document.getElementById("b").value=body;
+ u=document.getElementById("u").value;m=document.getElementById("m").value;
+ var init={method:m,headers:{}};
+ var b=document.getElementById("b").value;
+ if(m=="POST"&&b){init.body=b;init.headers["Content-Type"]="application/json"}
+ st.textContent=m+" "+u+" ...";
+ B=1;
+ fetch(u,init).then(function(r){
+  return r.text().then(function(t){
+   st.textContent=m+" "+u+"  ->  "+r.status+"  CL="+r.headers.get("content-length")+"  X-API-Version="+r.headers.get("x-api-version");
+   try{var j=JSON.parse(t);t=JSON.stringify(j,null,2);if(j&&j.job_id)document.getElementById("ji").value=j.job_id}catch(e){}
+   o.textContent=t
+  })
+ }).catch(function(e){st.textContent="error";o.textContent=String(e)}).finally(function(){B=0})
+}
+send("/api/system","GET");
+</script>
+</body></html>
+

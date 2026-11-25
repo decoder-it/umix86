@@ -1,5 +1,7 @@
 # UMIX/86
 
+Mostly coded by **DeepSeek-V4.1-Flash**.
+
 A small 16-bit, real-mode, preemptive multitasking operating system for the
 **8086/8088 PC/XT class**, written in 8086 assembly. It boots from a 360 KB
 floppy, runs in 640 KB, and provides a shell, a BASIC interpreter, a JSON API,
@@ -16,7 +18,7 @@ Current build: **V0R138** (API version 13).
 | `tools/` | image builders, the `serial_mux.py` bridge, TFTP/upload clients, the browser API explorer, the bridge tests |
 | `INDEX.HTM`, `UMX002.HTM`..`UMX007.HTM` | the in-guest system guide (overview, OS, MUX/TCP, services/BASIC, terminals, API, chat) |
 | `chat_local.htm`, `chat_umix.htm` | browser chat clients |
-| `docs/` | full manual, API reference, chat notes, Windows/real-hardware guide |
+| `docs/` | user manual, API reference, chat notes, Windows/real-hardware guide |
 
 ## Requirements
 
@@ -86,7 +88,7 @@ cd tools && python3 -m unittest test_serial_mux
 
 ## Documentation
 
-- [Full manual](docs/UMIX86.md)
+- [User manual](docs/UMIX86.md)
 - [API reference](docs/API_ENDPOINTS.txt)
 - [Chat API walkthrough](docs/CHAT_API_WEB.txt)
 - [Windows / real hardware](docs/LAB3_WINDOWS.txt)
