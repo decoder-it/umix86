@@ -16,9 +16,9 @@ UMIX/86 is neither an attempt to reinvent UNIX nor a demonstration of what AI ca
 
 Constructive technical criticism, bug reports, suggestions and contributions are always welcome.
 
-UMIX/86 is experimental software, provided without guarantees of stability, security or correctness, and is not intended for production use.
-
+UMIX/86 is experimental software, provided without guarantees of stability, security or correctness.
 And yes, the 8088 is still online... when it doesn't crash!
+More on this https://decoder.cloud/2026/11/24/an-8088-640-kb-of-ram-and-a-really-bad-idea/
 
 ## Overview
 
