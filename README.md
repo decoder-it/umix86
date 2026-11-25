@@ -89,6 +89,3 @@ cd tools && python3 -m unittest test_serial_mux
 ## Documentation
 
 - [User manual](docs/UMIX86.md)
-- [API reference](docs/API_ENDPOINTS.txt)
-- [Chat API walkthrough](docs/CHAT_API_WEB.txt)
-- [Windows / real hardware](docs/LAB3_WINDOWS.txt)
