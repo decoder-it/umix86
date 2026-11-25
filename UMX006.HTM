@@ -1,0 +1,63 @@
+<!doctype html><html><head><meta charset="utf-8"><title>UMIX/86 - the web API</title>
+<style>
+body{font:13px/1.45 monospace;background:#111;color:#ddd;margin:14px;max-width:74em}
+h1{font-size:15px;color:#6cf;margin:0 0 4px}
+nav{font-size:12px;border-bottom:1px solid #333;padding-bottom:6px;margin:0 0 12px}
+nav a{color:#8cf;margin-right:10px;white-space:nowrap;text-decoration:none}
+nav a:hover{color:#cff}
+h2{font-size:13px;color:#9df;margin:14px 0 4px}
+a{color:#8cf}a:hover{color:#cff}
+table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid #2a2a2a;padding:2px 8px 2px 0;text-align:left;vertical-align:top}
+code,.k{color:#cfc} .w{color:#fc6}
+pre{background:#000;border:1px solid #333;padding:8px;overflow:auto;line-height:1.35}
+</style></head><body>
+<h1>UMIX/86 - the web API</h1>
+<nav><a href="/">Overview</a><a href="/UMX002.HTM">OS</a><a href="/UMX003.HTM">MUX + TCP/IP</a><a href="/UMX004.HTM">Services + BASIC</a><a href="/UMX005.HTM">Terminals</a><a href="/UMX006.HTM">Web API</a><a href="/UMX007.HTM">Chat</a><a href="/EXPLORER.HTM">API explorer</a></nav>
+
+<p>JSON over HTTP, served by API.SYS at 0x9000. Base
+<code>http://HOST:8080</code>. Replies carry <code>X-API-Version: 13</code>
+and an exact <code>Content-Length</code>; every connection closes.</p>
+
+<h2>GET endpoints</h2>
+<table>
+<tr><td><code>/api</code></td><td>catalogue</td><td><code>/api/system</code></td><td>os, cpu, tasks, uptime</td></tr>
+<tr><td><code>/api/tasks</code></td><td>task count</td><td><code>/api/ps</code></td><td>slot/name/app/term/user/seg</td></tr>
+<tr><td><code>/api/memory</code></td><td>RAM</td><td><code>/api/who</code></td><td>logged-in sessions</td></tr>
+<tr><td><code>/api/whoami</code></td><td>this session</td><td><code>/api/users</code></td><td>account names</td></tr>
+<tr><td><code>/api/speed</code></td><td>baud, tick_hz</td><td><code>/api/time</code></td><td>hh/mm/ss</td></tr>
+<tr><td><code>/api/version</code></td><td>os/kernel/api</td><td><code>/api/status</code></td><td>feature bits</td></tr>
+<tr><td><code>/api/apps</code></td><td>job applications</td><td><code>/api/routes</code></td><td>BASIC routes</td></tr>
+</table>
+
+<h2>Jobs</h2>
+<pre>
+POST /api/jobs {"app":"prime","params":{"limit":1000}}
+  -> 202 {"job_id":1,...}
+GET  /api/jobs            list
+GET  /api/jobs/1          detail (status, result)
+GET  /api/jobs/1/result   result only
+DELETE /api/jobs/1        cancel
+</pre>
+
+<h2>BASIC routes</h2>
+<pre>
+API ROUTE /api/demo APIHELLO.BAS
+curl -s http://HOST:8080/api/demo
+</pre>
+<p>Route programs get P$, Q$, M$ and B$; their PRINT output is the response.
+A busy BASIC session yields 503; a runaway route times out with 500.</p>
+
+<h2>Chat</h2>
+<p><code>/api/chat</code>, <code>/api/chat/join</code>,
+<code>/api/chat/send</code>, <code>/api/chat/messages[/N]</code> and
+<code>DELETE /api/chat/join/&lt;token&gt;</code>. See
+<a href="/UMX007.HTM">the chat page</a>.</p>
+
+<h2>Limits</h2>
+<p>One request per connection and web sessions are serialized; request bodies
+cap at 767 bytes; static files at 4000 bytes. Chat answers 503 when the console
+ran <code>CHAT OFF</code> or when SLIP/TCP is on. The API is unauthenticated:
+keep port 8080 on a trusted network.</p>
+
+</body></html>

@@ -1,0 +1,66 @@
+<!doctype html><html><head><meta charset="utf-8"><title>UMIX/86 - system guide</title>
+<style>
+body{font:13px/1.45 monospace;background:#111;color:#ddd;margin:14px;max-width:74em}
+h1{font-size:15px;color:#6cf;margin:0 0 4px}
+nav{font-size:12px;border-bottom:1px solid #333;padding-bottom:6px;margin:0 0 12px}
+nav a{color:#8cf;margin-right:10px;white-space:nowrap;text-decoration:none}
+nav a:hover{color:#cff}
+h2{font-size:13px;color:#9df;margin:14px 0 4px}
+a{color:#8cf}a:hover{color:#cff}
+table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid #2a2a2a;padding:2px 8px 2px 0;text-align:left;vertical-align:top}
+code,.k{color:#cfc} .w{color:#fc6}
+pre{background:#000;border:1px solid #333;padding:8px;overflow:auto;line-height:1.35}
+</style></head><body>
+<h1>UMIX/86 - system guide</h1>
+<nav><a href="/">Overview</a><a href="/UMX002.HTM">OS</a><a href="/UMX003.HTM">MUX + TCP/IP</a><a href="/UMX004.HTM">Services + BASIC</a><a href="/UMX005.HTM">Terminals</a><a href="/UMX006.HTM">Web API</a><a href="/UMX007.HTM">Chat doc</a><a href="/CHAT.HTM">Chat app</a><a href="/EXPLORER.HTM">API explorer</a></nav>
+
+<p>These pages live on the guest's volume and are served by the
+<b>PC-side multiplexer bridge</b>. If you can read this, the whole
+stack is up: browser &rarr; bridge &rarr; framed serial link &rarr; guest
+kernel &rarr; web task &rarr; C:.</p>
+<p>Try it: <a href="/CHAT.HTM">chat</a> &middot;
+<a href="/EXPLORER.HTM">API explorer</a></p>
+<p class="w">Guide: <code>https://decoder-it.gotdns.ch/INDEX.HTM</code> &nbsp; API
+explorer: <code>/EXPLORER.HTM</code></p>
+
+<h2>The stack in one picture</h2>
+<pre>
+browser  https://decoder-it.gotdns.ch/INDEX.HTM
+   |
+serial_mux.py --http-listen        (host PC)
+   |  framed MUX frames over serial / unix socket
+UMIX/86 guest
+   kernel (64 KB) -> web task (app 2)
+        -> static page on the guest's C: volume
+        -> or the API.SYS overlay at 0x9000 (for /api/*)
+</pre>
+<p><code>/api/*</code> is handled by API.SYS at <code>0x9000</code>; every other
+path is a static file on the guest's C: volume (<code>/</code> means
+<code>INDEX.HTM</code>).</p>
+
+<h2>What UMIX/86 is</h2>
+<p>A small 16-bit, real-mode, preemptive multitasking OS for the 8086/8088
+PC/XT class. It boots from a 360 KB floppy, runs in 640 KB, and is written in
+8086 assembly. Every page here is served by the guest itself.</p>
+<table>
+<tr><th>piece</th><th>what it gives you</th></tr>
+<tr><td>kernel</td><td>scheduler, 13 task slots, FAT12/16 filesystems, console</td></tr>
+<tr><td>SYS overlay</td><td>shell, editor, BASIC, JCL and INT 62h routes</td></tr>
+<tr><td>API overlay</td><td>JSON API loaded at 0x9000 (API.SYS)</td></tr>
+<tr><td>MUX / TCP</td><td>framed terminal link, or TCP.SYS HTTP at 0x2900</td></tr>
+<tr><td>services</td><td>web, TFTP, JSON API, chat, BASIC jobs</td></tr>
+</table>
+
+<h2>Read more</h2>
+<ul>
+<li><a href="/UMX002.HTM">1. The OS</a> - boot, memory, tasks, files, shell, limits</li>
+<li><a href="/UMX003.HTM">2. MUX and TCP/IP</a> - the framed link and the IP stack</li>
+<li><a href="/UMX004.HTM">3. Services and BASIC</a> - web, TFTP, API, jobs, GWBASIC</li>
+<li><a href="/UMX005.HTM">4. Terminal access</a> - console, serial sessions, users</li>
+<li><a href="/UMX006.HTM">5. The web API</a> - endpoints and curl examples</li>
+<li><a href="/UMX007.HTM">6. The chat system</a> - terminal and browser chat</li>
+</ul>
+<p>Build V0R138 &middot; API 13.</p>
+
+</body></html>

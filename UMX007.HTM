@@ -1,0 +1,67 @@
+<!doctype html><html><head><meta charset="utf-8"><title>UMIX/86 - the chat system</title>
+<style>
+body{font:13px/1.45 monospace;background:#111;color:#ddd;margin:14px;max-width:74em}
+h1{font-size:15px;color:#6cf;margin:0 0 4px}
+nav{font-size:12px;border-bottom:1px solid #333;padding-bottom:6px;margin:0 0 12px}
+nav a{color:#8cf;margin-right:10px;white-space:nowrap;text-decoration:none}
+nav a:hover{color:#cff}
+h2{font-size:13px;color:#9df;margin:14px 0 4px}
+a{color:#8cf}a:hover{color:#cff}
+table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid #2a2a2a;padding:2px 8px 2px 0;text-align:left;vertical-align:top}
+code,.k{color:#cfc} .w{color:#fc6}
+pre{background:#000;border:1px solid #333;padding:8px;overflow:auto;line-height:1.35}
+</style></head><body>
+<h1>UMIX/86 - the chat system</h1>
+<nav><a href="/">Overview</a><a href="/UMX002.HTM">OS</a><a href="/UMX003.HTM">MUX + TCP/IP</a><a href="/UMX004.HTM">Services + BASIC</a><a href="/UMX005.HTM">Terminals</a><a href="/UMX006.HTM">Web API</a><a href="/UMX007.HTM">Chat</a><a href="/EXPLORER.HTM">API explorer</a></nav>
+
+<p>One room, two ways in: the terminal <code>CHAT</code> command and the HTTP
+chat API. Both share one history ring and see each other's lines.</p>
+
+<h2>Terminal chat</h2>
+<pre>
+USERID: CHAT
+NICKNAME: BOB
+BOB&gt; hello
+/WHO      list users (terminals + web nicknames)
+/QUIT     leave
+</pre>
+<p>Joining and leaving post <code>NICK: JOINED CHAT</code> /
+<code>NICK: LEFT CHAT</code> into the shared history, so browser clients see
+presence too.</p>
+
+<h2>HTTP chat</h2>
+<pre>
+POST /api/chat/join     {"nick":"ALICE"}        -> {"token":1}
+POST /api/chat/send     {"token":1,"text":"hi"} -> {"seq":4}
+GET  /api/chat/messages                          all retained
+GET  /api/chat/messages/3                        only seq &gt; 3
+DELETE /api/chat/join/1                          leave
+GET  /api/chat                                   nicks + api + latest
+</pre>
+<p>Nicknames are 2..9 alphanumeric chars, upcased; SYSOP is reserved. Text is
+50 chars max; controls and quotes are stripped. The ring keeps the last 16
+lines with 16-bit sequence numbers, so a browser polls
+<code>messages/&lt;last-seq&gt;</code>. Join announces the nickname; leave
+announces departure.</p>
+
+<h2>Ready-made pages</h2>
+<p><code>chat_local.htm</code> (open locally, absolute API base) and
+<code>chat_umix.htm</code> (upload as INDEX.HTM, relative paths, under 4 KB)
+implement join/send/polling with a serialized request queue and an optimistic
+local echo.</p>
+
+<h2>Controls and limits</h2>
+<ul>
+<li><code>CHAT OFF</code> on the console closes the room and makes every
+<code>/api/chat*</code> route answer 503; <code>CHAT ON</code> reopens it.
+Chat is on by default.</li>
+<li>Needs MUX ON and SLIP/TCP OFF: history and tokens live in the 0x2900
+window that TCP.SYS uses.</li>
+<li>History and tokens reset on reboot, SYS reload or TCP ON. The API is
+unauthenticated.</li>
+</ul>
+<p class="w">This page is served by the guest through the PC bridge on 8080;
+if it loaded, the ring and the web task are healthy.</p>
+
+</body></html>

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>UMIX/86 chat - local</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 14px/1.4 ui-monospace, Consolas, monospace; background:#0e1116;
+         color:#d7dde5; margin:0; }
+  header { padding:10px 14px; background:#161b22; border-bottom:1px solid #2a323d; }
+  h1 { font-size:15px; margin:0 0 2px; font-weight:600; }
+  small { color:#8b98a8; }
+  main { padding:12px 14px; max-width:900px; }
+  .row { display:flex; gap:6px; margin:6px 0; flex-wrap:wrap; align-items:center; }
+  input,button { font:inherit; border-radius:6px; border:1px solid #34404f;
+                 background:#141a21; color:#d7dde5; padding:6px 8px; }
+  input:focus { outline:2px solid #2f6feb; }
+  button { cursor:pointer; }
+  button.primary { background:#2456b3; border-color:#2f6feb; }
+  #users { color:#9fb3c8; min-height:1.4em; }
+  #log { height:300px; overflow:auto; border:1px solid #2a323d; border-radius:6px;
+         padding:8px; white-space:pre-wrap; background:#0b0f14; }
+  #log .err { color:#ff8080; }
+  #log .sys { color:#6b7c90; }
+  #status { color:#8b98a8; font-size:12px; }
+  .hidden { display:none; }
+</style>
+<header>
+  <h1>UMIX/86 chat</h1>
+  <small>API base: <span id="api"></span></small>
+</header>
+<main>
+  <div id="joinrow" class="row">
+    <input id="nick" maxlength="9" size="9" placeholder="nickname 2-9">
+    <button class="primary" onclick="join()">Join</button>
+    <span id="status"></span>
+  </div>
+  <div id="sendrow" class="row hidden">
+    <input id="msg" maxlength="50" size="46" placeholder="message, max 50">
+    <button class="primary" onclick="send()">Send</button>
+    <button onclick="leave()">Leave</button>
+  </div>
+  <div id="users"></div>
+  <div id="log"></div>
+</main>
+<script>
+// Change this if serial_mux.py --http-listen uses another host/port.
+const API = 'http://127.0.0.1:8080';
+document.getElementById('api').textContent = API;
+
+let token = null, since = 0, ticks = 0, pending = -1;
+let chain = Promise.resolve();
+const $ = id => document.getElementById(id);
+
+// The guest has one global HTTP parser and the bridge serializes web
+// sessions, so every call goes through one promise chain.
+function serial(fn) { chain = chain.then(fn, fn); return chain; }
+
+async function api(method, path, body) {
+  const r = await fetch(API + path, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : null
+  });
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch (e) { data = { error: text.trim() }; }
+  if (!r.ok) {
+    const e = new Error(data.error || ('HTTP ' + r.status));
+    e.status = r.status;
+    throw e;
+  }
+  return data;
+}
+
+function log(text, cls) {
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = text;                 // never innerHTML: text is untrusted
+  $('log').appendChild(d);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+function status(s) { $('status').textContent = s || ''; }
+
+function join() {
+  const nick = $('nick').value.trim();
+  if (!nick) { status('enter a nickname'); return; }
+  serial(async () => {
+    status('joining...');
+    try {
+      const j = await api('POST', '/api/chat/join', { nick });
+      token = j.token; since = 0; ticks = 0;
+      $('joinrow').classList.add('hidden');
+      $('sendrow').classList.remove('hidden');
+      $('msg').focus();
+      status('joined as ' + nick.toUpperCase() + ' (token ' + token + ')');
+      log('*** joined as ' + nick.toUpperCase(), 'sys');
+      await tick(true);
+    } catch (e) { status(e.message); }
+  });
+}
+
+function send() {
+  const text = $('msg').value;
+  if (!text) return;
+  status('sending...');
+  serial(async () => {
+    try {
+      const r = await api('POST', '/api/chat/send', { token, text });
+      pending = r.seq;                 // skip this line when the poll sees it
+      log('me: ' + text);
+      $('msg').value = '';
+      $('msg').focus();
+      status('');
+      await tick(true);
+    } catch (e) { status(e.message); }
+  });
+}
+
+function leave() {
+  serial(async () => {
+    try { await api('DELETE', '/api/chat/join/' + token); } catch (e) { /* ignore */ }
+    token = null;
+    $('sendrow').classList.add('hidden');
+    $('joinrow').classList.remove('hidden');
+    $('users').textContent = '';
+    status('left');
+    log('*** left', 'sys');
+  });
+}
+
+async function tick(force) {
+  if (!token) return;
+  if (document.hidden && !force) return;
+  try {
+    const m = await api('GET', '/api/chat/messages/' + since);
+    if (m.latest < since) since = m.latest;   // guest reboot / seq wrap: resync
+    for (const x of m.messages || []) {
+      if (x.seq === pending) { pending = -1; continue; }
+      log(x.seq + ': ' + x.text);
+    }
+    since = m.latest;
+    if (force || (ticks++ % 5) === 0) {
+      const u = await api('GET', '/api/chat');
+      const list = u.nicks.concat(u.api).join(' ');
+      $('users').textContent = 'users: ' + (list || '-');
+    }
+    status('');
+  } catch (e) {
+    status(e.message);
+    if (e.status === 400) {             // token lost: reboot, SYS reload, TCP ON
+      token = null;
+      $('sendrow').classList.add('hidden');
+      $('joinrow').classList.remove('hidden');
+      status('token expired - join again');
+    }
+  }
+}
+
+setInterval(() => serial(tick), 1500);
+</script>
+</html>

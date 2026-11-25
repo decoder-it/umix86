@@ -1,0 +1,64 @@
+<!doctype html><html><head><meta charset="utf-8"><title>UMIX/86 - terminal access</title>
+<style>
+body{font:13px/1.45 monospace;background:#111;color:#ddd;margin:14px;max-width:74em}
+h1{font-size:15px;color:#6cf;margin:0 0 4px}
+nav{font-size:12px;border-bottom:1px solid #333;padding-bottom:6px;margin:0 0 12px}
+nav a{color:#8cf;margin-right:10px;white-space:nowrap;text-decoration:none}
+nav a:hover{color:#cff}
+h2{font-size:13px;color:#9df;margin:14px 0 4px}
+a{color:#8cf}a:hover{color:#cff}
+table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid #2a2a2a;padding:2px 8px 2px 0;text-align:left;vertical-align:top}
+code,.k{color:#cfc} .w{color:#fc6}
+pre{background:#000;border:1px solid #333;padding:8px;overflow:auto;line-height:1.35}
+</style></head><body>
+<h1>UMIX/86 - terminal access</h1>
+<nav><a href="/">Overview</a><a href="/UMX002.HTM">OS</a><a href="/UMX003.HTM">MUX + TCP/IP</a><a href="/UMX004.HTM">Services + BASIC</a><a href="/UMX005.HTM">Terminals</a><a href="/UMX006.HTM">Web API</a><a href="/UMX007.HTM">Chat</a><a href="/EXPLORER.HTM">API explorer</a></nav>
+
+<h2>Two kinds of terminal</h2>
+<table>
+<tr><th>terminal</th><th>how to reach it</th></tr>
+<tr><td>CGA console, slot 0</td><td>the PC screen/keyboard; always present; console-only commands</td></tr>
+<tr><td>serial sessions, slots 1..10</td><td>the bridge's <code>--listen</code> port, a telnet-style TCP connection, or a real serial line</td></tr>
+</table>
+
+<h2>Starting a serial session</h2>
+<pre>
+python3 tools/serial_mux.py --serial /dev/ttyUSB0 --baud 9600 \
+    --listen 127.0.0.1:2323 --http-listen 127.0.0.1:8080
+telnet 127.0.0.1 2323
+</pre>
+<p>Each TCP client becomes a framed MUX terminal (app 1, termid 1..10). The
+guest shows <code>USERID:</code>; log in, then the shell prompt is
+<code>*</code>.</p>
+
+<h2>Users and privilege</h2>
+<p>Accounts live in the users table; <code>USER/USER</code> is the ordinary
+account and <code>SYSTEM/SYS1</code> the privileged one (change them). The
+console always has every command. A serial user gets console-only commands
+after <code>PRIV ON</code>; <code>PRIV</code> itself can only be turned on
+from the console.</p>
+
+<h2>Shell</h2>
+<p>Files: <code>DIR TYPE COPY DEL REN EDIT</code>. Programs: <code>RUN
+BASIC JCL</code>. System: <code>WHO USERS PS MEM SPEED API WEB TFTP CHAT
+DRIVE BAUD CLS HELP BYE</code>. <code>PS</code> prints slot, name, app,
+terminal, user, console, state and segment; <code>/WHO</code> inside CHAT
+lists terminal and web nicknames.</p>
+
+<h2>Screen handling</h2>
+<p>The editor and the chat panel use an 80x25 screen with a pager. Output is
+line-buffered; long output pages with a key prompt. The console can switch
+between CGA and Hercules-style text. Baud is set with <code>BAUD</code>
+(default 9600); the bridge paces input to match.</p>
+
+<h2>Notes</h2>
+<ul>
+<li>One request/connection at a time; web and terminal sessions share the same
+ten serial slots.</li>
+<li><code>BYE</code> logs out and frees the slot; the guest sends CLOSE.</li>
+<li>Keep the bridge on a trusted network: the API and chat are unauthenticated,
+and the console has no login.</li>
+</ul>
+
+</body></html>

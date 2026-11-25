@@ -1,0 +1,18 @@
+# build outputs
+build/
+archive/
+*.img
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# editor / OS
+.DS_Store
+
+# traces and local backups
+*.pcap
+*.bak*
+docs/archive/

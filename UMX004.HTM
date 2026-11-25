@@ -1,0 +1,63 @@
+<!doctype html><html><head><meta charset="utf-8"><title>UMIX/86 - services and BASIC</title>
+<style>
+body{font:13px/1.45 monospace;background:#111;color:#ddd;margin:14px;max-width:74em}
+h1{font-size:15px;color:#6cf;margin:0 0 4px}
+nav{font-size:12px;border-bottom:1px solid #333;padding-bottom:6px;margin:0 0 12px}
+nav a{color:#8cf;margin-right:10px;white-space:nowrap;text-decoration:none}
+nav a:hover{color:#cff}
+h2{font-size:13px;color:#9df;margin:14px 0 4px}
+a{color:#8cf}a:hover{color:#cff}
+table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid #2a2a2a;padding:2px 8px 2px 0;text-align:left;vertical-align:top}
+code,.k{color:#cfc} .w{color:#fc6}
+pre{background:#000;border:1px solid #333;padding:8px;overflow:auto;line-height:1.35}
+</style></head><body>
+<h1>UMIX/86 - services and BASIC</h1>
+<nav><a href="/">Overview</a><a href="/UMX002.HTM">OS</a><a href="/UMX003.HTM">MUX + TCP/IP</a><a href="/UMX004.HTM">Services + BASIC</a><a href="/UMX005.HTM">Terminals</a><a href="/UMX006.HTM">Web API</a><a href="/UMX007.HTM">Chat</a><a href="/EXPLORER.HTM">API explorer</a></nav>
+
+<h2>Services</h2>
+<table>
+<tr><th>service</th><th>how</th></tr>
+<tr><td>web server</td><td>GET / or /NAME.EXT from C:, and /api/* ; 4 KB files, text/html</td></tr>
+<tr><td>JSON API</td><td>API.SYS at 0x9000; see <a href="/UMX006.HTM">Web API</a></td></tr>
+<tr><td>TFTP</td><td>UDP 69, GET/PUT, block 8..192, windowsize 1..4; PUT needs WRITE ON</td></tr>
+<tr><td>BASIC routes</td><td><code>API ROUTE /api/name FILE.BAS</code> via INT 62h</td></tr>
+<tr><td>jobs</td><td>prime, sort, crc16, run one at a time by the kernel</td></tr>
+<tr><td>JCL</td><td><code>C:\STARTUP.JCL</code> plus <code>JCL FILE.JCL</code></td></tr>
+<tr><td>chat</td><td>terminal room and HTTP chat; see <a href="/UMX007.HTM">Chat</a></td></tr>
+</table>
+
+<h2>Web server</h2>
+<p><code>/</code> serves INDEX.HTM. Any other target maps to an 8.3 name in
+the C: root and is served if it exists (<code>/README.TXT</code>,
+<code>/job.jcl?x=1</code>). Missing, nested or larger than 4000 bytes gets
+404.HTM or NOT FOUND. Every reply is <code>Connection: close</code>.</p>
+
+<h2>TFTP</h2>
+<pre>
+TFTP ON        serve UDP 69 (needs MUX ON)
+TFTP GET UMIX.SYS
+TFTP PUT FILE   (needs WRITE ON)
+</pre>
+
+<h2>BASIC</h2>
+<p><code>BASIC</code> starts a GWBASIC-style, line-numbered interpreter:
+<code>FOR/NEXT IF/THEN/ELSE GOTO GOSUB RETURN INPUT PRINT DIM</code>, integer
+math, strings, <code>LOAD</code>/<code>SAVE</code> of .BAS files. Limits:
+61-char lines, 16-bit integers, 63-char strings.</p>
+<p>When a .BAS file is registered as an API route it is started through
+INT 62h. Before it runs, four string variables are preset:</p>
+<table>
+<tr><td><code>P$</code></td><td>request path</td><td><code>Q$</code></td><td>query string</td></tr>
+<tr><td><code>M$</code></td><td>GET / POST / DELETE</td><td><code>B$</code></td><td>first 63 body chars</td></tr>
+</table>
+<p>The interpreter's PRINT output is captured as the HTTP body. The route
+has a 90-tick budget; a busy BASIC session makes the route answer 503.</p>
+
+<h2>Jobs</h2>
+<p>POST <code>/api/jobs</code> with an app and params. The kernel pumps one
+job at a time between timer ticks; completed results are kept in the job
+table. Apps: <code>prime</code> (count primes), <code>sort</code> (sort a
+string list), <code>crc16</code> (CRC of supplied data).</p>
+
+</body></html>

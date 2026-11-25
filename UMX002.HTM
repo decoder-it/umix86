@@ -1,0 +1,60 @@
+<!doctype html><html><head><meta charset="utf-8"><title>UMIX/86 - the OS</title>
+<style>
+body{font:13px/1.45 monospace;background:#111;color:#ddd;margin:14px;max-width:74em}
+h1{font-size:15px;color:#6cf;margin:0 0 4px}
+nav{font-size:12px;border-bottom:1px solid #333;padding-bottom:6px;margin:0 0 12px}
+nav a{color:#8cf;margin-right:10px;white-space:nowrap;text-decoration:none}
+nav a:hover{color:#cff}
+h2{font-size:13px;color:#9df;margin:14px 0 4px}
+a{color:#8cf}a:hover{color:#cff}
+table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid #2a2a2a;padding:2px 8px 2px 0;text-align:left;vertical-align:top}
+code,.k{color:#cfc} .w{color:#fc6}
+pre{background:#000;border:1px solid #333;padding:8px;overflow:auto;line-height:1.35}
+</style></head><body>
+<h1>UMIX/86 - the OS</h1>
+<nav><a href="/">Overview</a><a href="/UMX002.HTM">OS</a><a href="/UMX003.HTM">MUX + TCP/IP</a><a href="/UMX004.HTM">Services + BASIC</a><a href="/UMX005.HTM">Terminals</a><a href="/UMX006.HTM">Web API</a><a href="/UMX007.HTM">Chat</a><a href="/EXPLORER.HTM">API explorer</a></nav>
+
+<h2>Boot</h2>
+<ol>
+<li>Boot sector reads the 128-sector kernel image to <code>1000:0000</code>.</li>
+<li>Kernel mounts the volumes, loads users, loads <code>UMIX.SYS</code>.</li>
+<li>Loads <code>CHAT.SYS</code> (stub) and <code>API.SYS</code>, then runs
+<code>C:\STARTUP.JCL</code> before the first prompt.</li>
+<li>CGA shell on slot 0; serial sessions start on demand.</li>
+</ol>
+
+<h2>Memory map</h2>
+<table>
+<tr><th>segment</th><th>use</th></tr>
+<tr><td>1000</td><td>kernel, 64 KB (full 128-sector image)</td></tr>
+<tr><td>2000</td><td>UMIX.SYS overlay (~40 KB): shell/editor/BASIC/JCL</td></tr>
+<tr><td>2900</td><td>TCP.SYS or CHAT.SYS window; chat history ring</td></tr>
+<tr><td>3000, 4000</td><td>program slots 11 and 12 (RUN)</td></tr>
+<tr><td>6000..6B00</td><td>per-session task stacks</td></tr>
+<tr><td>6C00 / 6E00</td><td>file and TFTP buffers</td></tr>
+<tr><td>7000</td><td>RAM disk (M:)</td></tr>
+<tr><td>8000</td><td>kernel stack</td></tr>
+<tr><td>9000</td><td>API.SYS overlay (JSON API)</td></tr>
+</table>
+
+<h2>Tasks and scheduler</h2>
+<p>13 slots: 0 is the CGA console, 1..10 are serial sessions, 11..12 are
+program slots. The timer runs a preemptive round-robin; <code>QUANTUM</code>
+sets 18..1000 Hz (default 18). A task yields with INT 60h AH=7 and exits with
+AH=8. Critical sections use a byte counter (<code>crit</code>) so the timer
+skips switching.</p>
+
+<h2>Storage</h2>
+<p>A: floppy, C: hard disk, M: RAM disk. FAT12 or FAT16, 8.3 names, 64 KB file
+limit. <code>WRITE ON</code> is required before anything writes to C:.</p>
+
+<h2>Shell</h2>
+<p><code>DIR TYPE COPY DEL REN EDIT RUN BASIC JCL USER USERS PRIV DRIVE WEB
+TFTP CHAT API PS MEM WHO SPEED QUANTUM BAUD CLS HELP BYE</code>.</p>
+
+<h2>Limits</h2>
+<p>BASIC lines 61 chars; 16-bit integers; 63-char strings; static web pages
+4000 bytes; API request bodies 767 bytes; one running BASIC job at a time.</p>
+
+</body></html>

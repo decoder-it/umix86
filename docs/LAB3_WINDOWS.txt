@@ -1,0 +1,822 @@
+UMIX/86 - LAB3 TEST: ONE BASIC USER + TWO SHELL USERS
+=======================================================
+
+This file describes how to set up and run the lab3 test on Windows with the
+Python serial bridge (tools\serial_mux.py).
+
+Test layout:
+
+    CGA / SYSOP console ............ runs PS, WHO, MEM
+    serial session 1 (USER) ........ runs a BASIC program
+    serial session 2 (USER2) ....... runs shell commands
+    serial session 3 (SYSTEM) ...... runs shell commands
+
+All three serial sessions log in simultaneously.  The two shell sessions run
+kernel commands (WHO, PS, ECHO, TIME, MEM) while BASIC is computing.  They are
+measured from command send until the command has actually completed.
+
+The BASIC interpreter holds the single SYS overlay lock, so DIR, TYPE, JCL,
+LOAD, SAVE and a second BASIC cannot run during BASIC.  The lab uses kernel
+commands for the shell users for that reason.
+
+
+1. WHAT YOU NEED
+----------------
+
+  * A UMIX/86 image with the patched UMIX.SYS (STI + overlay lock + yield).
+  * A COM port that reaches the guest's COM1.
+  * Windows Python 3.10 or newer.
+  * pyserial:
+
+        py -m pip install pyserial
+
+  * The bridge:        tools\serial_mux.py
+  * The test script:   tools\lab3.py
+  * The BASIC program: demo\LAB.BAS
+
+
+2. PREPARE THE GUEST
+--------------------
+
+The current paired build is V0R138:
+
+    build\umix86.img   66,048 bytes   boot+kernel  SHA256 9b9b226807b59e76c0f6a4f7caf3c64b40430e48bbb368fa38910fc4eb82a548
+    build\umix.sys     40,472 bytes   overlay      SHA256 a04500157faa40a2367f1a5a24559086e706b1f0c095200533fb360ea8a3f141
+    build\tcp.sys       2,816 bytes   TCP/HTTP     SHA256 3d815d488920f388f0a235766ea2567870f4e38c51b0bc747cd5101f50400295
+
+Both must be from the same build.  UMIX.SYS goes on C:\UMIX.SYS; the img is
+raw-written to the boot floppy.  The overlay prints "UMIX.SYS V0R138" when it
+loads, and the kernel banner is "UMIX/86 V0R138".
+
+The JSON API overlay is a fourth file:
+
+    build\api.sys      17,452 bytes   JSON API+jobs SHA256 207f2413be4f83b1ead1149c6bd25dacfc45bc359db063852fab6771bbe69775
+
+This pair fixes the /api/users password leak: AH=27 now returns a standalone
+NUL-terminated name copy, and the loaded user table is canonicalized.  Both
+files must be deployed together.
+
+V0R128 also serves GET /api/hello from a built-in BASIC program in UMIX.SYS
+(INT 62h bridge, captured PRINT output).  While an interactive BASIC session
+is active the route answers 503; a runaway route times out with 500.
+
+Copy it to C:\API.SYS; it loads at 0x9000 and prints "API.SYS V12 - POST+ROUTES+CHAT".
+
+C:\INDEX.HTM is the API explorer (tools/api_explorer.html, 3,334 bytes; the
+guest limit is 4,000).  Open http://HOST/ through the serial_mux --http-listen
+port.  The bridge serializes web sessions (the guest's HTTP parser state is
+global); use that listener for concurrent clients.
+From the shell, API OFF stops serving /api without a reboot, and API ON
+reloads C:\API.SYS (job state and the request lock are reset).  INT 0/6
+faults now print PANIC and halt instead of silently resetting.
+The kernel and this overlay are a matched pair: the kernel calls the job pump
+only when the overlay advertises it at load time, and the kernel loads up to
+16 KB of overlay for the job table and string pool.
+
+Overlay versions seen in this tree:
+
+    36,638 bytes  original, no preemption fix: BASIC freezes the system.
+    36,698 bytes  first fix (STI + lock + yield): BASIC is preemptible, but
+                  an abandoned BASIC session can leave the overlay lock set.
+    36,678 bytes  kernel-owned lock, no version probe.
+    36,755 bytes  V0R81: kernel-owned lock + AH=18 probe.  A new overlay on
+                  an old boot floppy prints
+                  "BOOT FLOPPY TOO OLD - REWRITE UMIX86.IMG" instead of
+                  hanging.
+    40,472 bytes  V0R138 current: expanded PS via AH=33, JSON chat API, AH=33 metadata
+                  hook, console fixes (ES/DF guards, registers kept across
+                  getline_char, CLD after BIOS calls).  Use this pair.
+
+Verify it on the CGA console:
+
+    DIR
+
+The UMIX.SYS line should show 38377 bytes.  If it shows a different size,
+copy the current build\umix.sys to C:\UMIX.SYS and reboot, or use the prepared
+build\testc.img.  The lab scripts are host-side only; they cannot update the
+guest's UMIX.SYS for you.  Also make sure the boot floppy was written from the
+current build\umix86.img (same build); an old kernel lacks the V0R123 overlay
+API.
+
+Quick emulator setup (QEMU example, no COM port yet):
+
+    build\umix86-360.img   360 KB boot floppy (emulator/Gotek)
+    build\testc.img        21 MB C: image, already contains UMIX.SYS and
+                           STARTUP.JCL.  Which switches it enables depends
+                           on how mkfat.py was run: UMIX_MUX=1 for the serial
+                           labs, UMIX_TCP=1 (+ UMIX_BIGWEB=1) for the TCP
+                           tests.
+
+For a real 360 KB floppy, write build\umix86.img (66,048 bytes) with
+RAWRITE2 or FDIMAGE, then copy build\umix.sys to C:\UMIX.SYS from DOS.
+
+If you rebuild build\testc.img with tools\mkfat.py, run it with UMIX_MUX=1
+so STARTUP.JCL contains an active "MUX ON" line.  In PowerShell:
+
+    $env:UMIX_MUX = "1"
+    py tools\mkfat.py
+
+(In cmd.exe use: set UMIX_MUX=1, then py tools\mkfat.py.)
+
+Do NOT combine UMIX_MUX=1 with UMIX_TCP=1: COM1 is either the framed mux or
+SLIP.  mkfat.py now ignores UMIX_MUX when UMIX_TCP=1 (and writes "MUX OFF"),
+because otherwise "SLIP ON" fails with "SLIP: MUX IS ON" and the HTTP server
+never sees a packet.
+
+If you use your own C: drive, copy build\umix.sys to C:\UMIX.SYS from DOS,
+then boot UMIX/86.
+
+On the CGA / SYSOP console:
+
+    MUX ON
+    QUANTUM 100
+    BAUD 9600
+
+Notes:
+
+  * MUX ON is a console-only command.  Type it on the CGA keyboard, not on
+    the raw COM1 shell.
+  * QUANTUM 100 gives a 10 ms scheduler tick; 18 is the default and is
+    sluggish with three sessions.  100 is a good value for this test.
+    At 18 Hz, typing one BASIC line or running one shell command often
+    takes ~500 ms; at 100 Hz it drops to roughly 100-200 ms.  If shell1
+    and shell2 report only one command in a 10 s window, QUANTUM is
+    probably still 18.
+  * The current lab3.py sends MORE OFF before BASIC starts.  Older copies
+    sent it inside the shell worker after RUN, where its prompt could
+    consume most of a short shell window.
+  * BAUD must match the bridge.  If you use 19200 or 38400, type BAUD 19200
+    (or BAUD 38400) and start the bridge with the same --baud value.
+  * Do not use DIR/TYPE while BASIC runs; they wait on the SYS overlay lock.
+  * Do not run SYS while the lab is running; it reloads the overlay.
+
+The login accounts used by lab3 are the built-in ones:
+
+    USER    / USER       BASIC session
+    USER2   / USER2      shell session 1
+    SYSTEM  / SYS1       shell session 2
+
+If your account table is different, pass --basic-account and --shell-accounts
+to lab3.py (see section 6).
+
+
+3. CONNECT THE COM PORT ON WINDOWS
+----------------------------------
+
+The bridge expects a real Windows COM port for a physical/emulated machine, or
+a virtual COM pair for an emulator.
+
+A. Real hardware or a USB-serial adapter
+   Connect the guest COM1 to the adapter.  Find the port in Device Manager,
+   for example COM6.  Close any terminal program using it.
+
+B. 86Box / PCem
+   Install com0com and create a virtual pair, for example COM5 <-> COM6.
+   Set the emulator's COM1 to COM5.  The bridge uses COM6.
+   Both ends must use the same baud, 8N1.
+
+C. QEMU on Windows
+   QEMU's -serial unix: socket form is Unix-only.  Use a COM-port pair
+   (com0com) and give QEMU the emulator side, or run the bridge under WSL/
+   Linux.  The current serial_mux.py accepts a COM port or unix:/path; it
+   does not accept a QEMU TCP serial endpoint directly.
+
+Close Tera Term / PuTTY before starting the bridge: only one program can own
+the COM port.
+
+
+4. VERIFY THE SERIAL LINK FIRST
+-------------------------------
+
+Before running the lab, open the guest COM port in Tera Term or PuTTY:
+
+    Port:       COM6 (the bridge side)
+    Speed:      9600
+    Data:       8
+    Parity:     None
+    Stop bits:  1
+    Flow:       None
+
+You should see the UMIX/86 boot messages and then the serial login banner
+(USERID:), because STARTUP.JCL has already run MUX ON.  If you see garbage,
+check the baud rate.  If you see nothing, check TX/RX, the COM port number and
+whether the guest booted.
+
+Close the terminal before step 5.
+
+
+5. START THE PYTHON BRIDGE
+--------------------------
+
+Open PowerShell in the umix86 project directory:
+
+    py tools\serial_mux.py --serial COM6 --baud 9600 --listen 127.0.0.1:2323 --max-sessions 10
+
+If your bridge side is COM5, use COM5.  Expected line:
+
+    ... INFO listening on 127.0.0.1:2323 (max 10 sessions)
+
+Leave this window open.  The bridge owns the COM port until you press Ctrl+C.
+
+Framed mode is the default, exactly as before; the lab scripts need it.  The
+new --no-framed option selects a raw, one-client serial bridge: the guest must
+be at a raw console (MUX OFF), there are no OPEN/ACK frames or terminal IDs,
+and the HTTP/upload/fixed options are ignored.  --telnet works with both
+framed and raw modes; it negotiates/strips IAC and escapes 0xFF.  Connect the
+raw client before the guest boots (or reset it) because the raw pipe does not
+replay the boot banner.  Use the default framed mode for lab3.py, lab5.py,
+basic_user.py, shell1/2 and chat_user.py.
+
+The current serial_mux.py paces console input at the frame-byte level: it
+sends 8 data bytes per frame and spaces the frame bytes by 10 ms.  This is
+required on real hardware: the guest UART has no receive FIFO and the shell
+tasks poll only between scheduler slices.  A whole frame sent as a burst is
+lost while BASIC is running, and the line editor receives a corrupted command
+(for example LOAD turns into LA CHLO / OD":QUCK").  Copy the current
+tools\serial_mux.py and restart the bridge after updating it.
+
+Do not add --telnet for the lab scripts: they are raw TCP clients.  --telnet
+is for human telnet clients; it can be combined with framed or --no-framed:
+
+    python serial_mux.py --serial COM6 --baud 9600 --listen 127.0.0.1:2323 --telnet
+    python serial_mux.py --no-framed --telnet --serial COM6 --baud 9600 --listen 127.0.0.1:2323
+
+If you changed the guest to 19200 baud, start the bridge with --baud 19200.
+The guest and bridge must agree.
+
+
+6. RUN THE TEST
+---------------
+
+Open a second PowerShell window in the umix86 project directory.
+
+Preferred: copy the .BAS files to the *guest* C: root from DOS, keeping 8.3
+names:
+
+    C:\HELLO.BAS
+    C:\QUICK.BAS
+    C:\COMPUTE.BAS
+    C:\LAB.BAS
+
+Then use --program with an explicit C: prefix (no --inline, no upload):
+
+    py tools\lab3.py --program C:HELLO --done-regex "5\+7=12" --shell-duration 10
+    py tools\lab3.py --program C:QUICK --done-regex "QUICK DONE 20001" --shell-duration 20 --timeout 900
+    py tools\lab3.py --program C:COMPUTE --done-regex "DONE SUM=[0-9]+" --shell-duration 30 --timeout 900
+    py tools\lab3.py --program C:LAB --done-regex "ROUND 50 SUM [0-9]+" --shell-duration 30 --timeout 1800
+
+The script enters BASIC, runs LOAD "C:NAME", waits for LOADED, then RUN.
+
+Default connection is 127.0.0.1:2323, matching the bridge command above.
+
+Useful options:
+
+    --host HOST              default 127.0.0.1
+    --port PORT              default 2323
+    --program NAME           LOAD C:NAME (use the C: prefix)
+    --inline FILE            fallback: type this .BAS file instead of LOAD
+    --done-regex REGEX       default: ROUND 50 SUM [0-9]+
+    --basic-account U:P      default USER:USER
+    --shell-accounts U:P,U:P default USER2:USER2,SYSTEM:SYS1
+    --shell-interval SEC     default 1.0
+    --shell-timeout SEC      default 20
+    --shell-duration SEC     default 15, measured from BASIC start
+    --shell-start-delay SEC  default 1.0; wait after RUN before shell commands
+    --timeout SEC            default 180 for the BASIC run
+    --verbose                print every serial RX/TX chunk from all sessions
+    --terminal [SEL]         raw terminal: basic (default), shell1, shell2, all
+    --out DIR                default runs\lab3-YYYYmmdd-HHMMSS
+
+The heartbeat now also prints the last bytes received from the BASIC session:
+
+    [*]  5.0s BASIC=pending shell1=10 cmds shell2=10 cmds last='ROUND 3...'
+
+For readable output use --terminal basic (or --terminal all).  It prints the
+guest terminal as-is, with no [RX]/[TX] prefixes and no heartbeat:
+
+    py tools\lab3.py --program C:HELLO --done-regex "5\+7=12" --terminal basic
+
+With --verbose you see the lower-level traffic (for debugging only):
+
+    [basic RX 11:38:00] 'UMIX/86 V0R121 - SERIAL CONSOLE\r\n...'
+    [basic TX 11:38:01] 'USER\r\n'
+    ...
+    [basic TX 11:38:02] 'BASIC\r\n'
+    [basic RX 11:38:02] 'BASIC\r\n'
+
+If the last line is only 'BASIC\r\n' and no UMIX BASIC banner follows, the
+SYS overlay lock is held or the kernel/overlay pair is old.  The V0R121 overlay
+prints "BOOT FLOPPY TOO OLD - REWRITE UMIX86.IMG" on an old kernel.
+
+The script prints progress and writes:
+
+    runs\lab3-test1\basic.log
+    runs\lab3-test1\shell1.log
+    runs\lab3-test1\shell2.log
+    runs\lab3-test1\summary.txt
+
+
+7. WHAT TO WATCH ON THE SYSOP CONSOLE
+-------------------------------------
+
+While the test runs, type on the CGA console:
+
+    PS
+    WHO
+    MEM
+
+PS shows slots 1, 2 and 3 as SER-SHELL with USER, USER2 and SYSTEM.  The slot
+currently running PS is marked <== CURRENT.  WHO lists the three COM1 sessions.
+MEM shows conventional memory.
+
+The CGA console is independent of the three serial sessions; it does not need
+a login.
+
+
+8. EXPECTED RESULTS
+-------------------
+
+On QEMU (not a real 4.77 MHz machine), one recent run was:
+
+    basic1   basic    105.7    423.4     8.32 ok
+    shell1   shell       24 cmds  min=2.5 p50=17.1 p95=25.6 max=25.8 ms
+    shell2   shell       24 cmds  min=2.7 p50=17.2 p95=25.7 max=25.9 ms
+
+For basic1 the columns are login_ms, load_ms, run_seconds, status.
+
+Meaning:
+
+  * The BASIC program finished in about 8 seconds.
+  * Each shell session completed 24 commands in the 12-15 second window.
+  * Shell command latency stayed in the tens of milliseconds; both sessions
+    remained responsive while BASIC was computing.
+
+On a real 4.77 MHz 8088 with a shared 9600 baud link, expect much slower
+numbers:
+
+  * LAB.BAS has 50 rounds of 20,000 iterations; it can take several minutes.
+    Use --timeout 900, or edit line 40 of demo\LAB.BAS to fewer rounds and
+    pass the matching --done-regex.
+  * A 9600 baud line carries about 960 bytes/second.  A PS listing is roughly
+    500 bytes, so the marker after PS can be delayed by about half a second.
+    WHO/TIME/MEM are shorter.  Use 19200 or 38400 and set BAUD on the guest
+    and --baud on the bridge to reduce this.
+  * Increase --shell-interval to 1.0 or more so the shell sessions do not
+    queue commands faster than the serial link can drain them.
+
+A correct run returns exit code 0 and the summary shows:
+
+    basic1 ... ok
+    shell1 ... N cmds ...
+    shell2 ... N cmds ...
+
+If BASIC times out, the script sends Ctrl-C and SYSTEM.  If a session is still
+stuck, reboot the guest (a BASIC session that never sent SYSTEM can leave the
+SYS overlay lock set).
+
+
+9. RUNNING THE 5-SESSION LAB (OPTIONAL)
+---------------------------------------
+
+tools\lab5.py runs three BASIC sessions and two CHAT sessions.  With the
+current single-instance SYS overlay, the three BASIC sessions are serialized;
+CHAT runs continuously.  The command is:
+
+    py tools\lab5.py --inline demo\LAB.BAS --chat-duration 30 --out runs\lab5-test1
+
+The bridge command is the same; it allows up to 10 sessions.
+
+
+10. TROUBLESHOOTING
+-------------------
+
+"serial.serialutil.SerialException: could not open port 'COM6'"
+    The port is in use by Tera Term/PuTTY, the wrong port number was used,
+    or the driver is missing.  Close the terminal; check Device Manager.
+
+No USERID after the bridge starts
+    MUX is not ON, the guest is not booted, the baud rates differ, or TX/RX
+    are not connected.  Verify with a terminal at the same baud first.
+    Remember: MUX ON must be typed on the CGA console.
+
+"all serial sessions are in use"
+    Stale sessions from a previous run.  Reboot the guest.  The bridge sends
+    CLOSE at startup, but a crashed guest can leave slots allocated.
+
+"timeout waiting for UMIX BASIC"
+    A previous BASIC session is still at the ">" prompt and holds the SYS
+    overlay lock.  Type SYSTEM at that session or reboot.  lab3.py sends
+    SYSTEM after a successful run.
+
+Run stops after "starting BASIC" or "entering BASIC"
+    First check the pair.  Current is V0R138: UMIX.SYS 40,472 bytes and a boot
+    floppy written from the current build\umix86.img (66,048 bytes, SHA256
+    9b9b226807b59e76c0f6a4f7caf3c64b40430e48bbb368fa38910fc4eb82a548).  The 36,698 build has the preemption fix but not the
+    kernel-owned lock cleanup; the 36,678 build has the lock cleanup but no
+    version probe.  The 36,638 build runs BASIC with interrupts disabled and
+    freezes the shell sessions and the CGA console.
+
+    If the overlay is current but the boot floppy is old, the overlay prints
+    "BOOT FLOPPY TOO OLD - REWRITE UMIX86.IMG" and returns instead of hanging.
+    If it hangs with only the "BASIC" echo, the running kernel/overlay pair is
+    still mismatched or a live overlay command owns the lock.
+
+    Copy the current build\umix.sys (36,779) to C:\UMIX.SYS, rewrite the boot
+    floppy from the current build\umix86.img, and reboot.  A live BASIC session
+    at the ">" prompt still holds the lock: send SYSTEM or reboot.  The current
+    kernel releases the lock automatically when the owning session is
+    closed/reset.
+
+    The current lab3.py prints a heartbeat every 5 seconds:
+
+        [*]    5.0s  BASIC=pending  shell1=10 cmds  shell2=10 cmds
+        [*] BASIC finished in 8.38s
+
+    Rising shell counts mean the shell tasks are alive.  Zero shell counts
+    with rising elapsed time means the guest is not switching away from BASIC
+    (old overlay, or BASIC is not actually running).
+
+    LAB.BAS is also genuinely slow on a 4.77 MHz machine: 50 rounds of 20,000
+    iterations.  Use --timeout 900, fewer rounds, or a smoke test first:
+
+        py tools\lab3.py --inline demo\HELLO.BAS --done-regex "5\+7=12" --shell-duration 10
+
+    Check lab3.log\basic.log and the shell logs.  If basic.log shows RUN and
+    then ROUND lines, the program is computing.  If it shows RUN and only
+    ">", the program did not store or execute (check the typed lines and the
+    UMIX.SYS version).
+
+Shell commands wait or time out
+    You are probably running an overlay command (DIR, TYPE, JCL, BASIC) while
+    BASIC owns the overlay lock.  Use kernel commands (WHO, PS, ECHO, TIME,
+    MEM) during BASIC, or wait until BASIC exits.
+
+Shell TX appears but no shell RX
+    The guest never received the command.  This is the unpaced-UART problem:
+    the bridge must space the console frame bytes by 10 ms and the shell
+    workers must wait a little after RUN.  Copy the current serial_mux.py and
+    lab3.py, restart the bridge, and keep --shell-start-delay at 1.0 or more.
+    With --verbose you will then see the RX echo and the DONE marker.
+
+Only one shell command in a short run
+    Check the guest with the CGA console: QUANTUM should be 100, not the
+    default 18.  At 18 Hz each typed line or shell command can take ~500 ms.
+    Also use the current lab3.py: it sends MORE OFF before BASIC.  Old copies
+    sent MORE OFF from the shell worker after RUN, and a slow prompt could
+    consume a 10 s shell window.  Try --shell-duration 20 or 30.
+
+CGA screen goes black while BASIC runs, Enter redraws it, then black again
+    This was the serial BASIC CLS path calling BIOS video mode and clearing
+    the physical CGA.  The current boot image fixes api_cls: a serial session
+    now clears its own terminal instead of the CGA.  If you still see it, you
+    are booting an old umix86.img; rawrite the current build\umix86.img
+    (SHA256 26ffd69b...).  DEMO.BAS also no longer contains CLS.
+
+Chat nickname is S2 / "timeout waiting for ALICE>"
+    A stale chat session or nickname is occupying the terminal.  Close the old
+    chat windows/scripts, restart the bridge, and reboot the guest before the
+    demo.  The chat scripts expect a fresh USERID -> CHAT -> NICKNAME flow.
+
+"LOADED" but RUN prints nothing
+    The upload path currently writes blank files in this test image.  Use
+    --inline demo\LAB.BAS instead of --program / LOAD.
+
+pyserial missing
+    py -m pip install pyserial
+
+Wrong Python
+    Use Python 3.10 or newer.  The scripts use modern type hints and run fine
+    on 3.10+; avoid Python 2.
+
+Firewall
+    The bridge listens on 127.0.0.1 by default, so no firewall rule is
+    normally needed.  If you bind 0.0.0.0, allow TCP 2323 for the lab client.
+
+
+11. FILES USED BY THIS TEST
+---------------------------
+
+    tools\serial_mux.py   Python bridge (COM port or unix: socket)
+    tools\lab3.py         one BASIC + two shell sessions (combined)
+    tools\lab5.py         three BASIC + two chat sessions (optional)
+    tools\basic_user.py   separate BASIC user script
+    tools\shell_user.py   shared shell-user implementation
+    tools\shell1_user.py  separate shell user 1 (USER2)
+    tools\shell2_user.py  separate shell user 2 (SYSTEM)
+    tools\chat_user.py    separate CHAT user (interactive or --auto N)
+    tools\run_three.bat   starts BASIC + two shells in separate cmd windows
+    tools\run_demo.bat    starts BASIC + one shell + two chats (video demo)
+    demo\DEMO.BAS         ten-loop BASIC demo
+    demo\LAB.BAS          sustained BASIC load (50 rounds)
+    demo\COMPUTE.BAS      shorter BASIC benchmark
+    demo\QUICK.BAS        short no-MOD loop
+    demo\HELLO.BAS        BASIC smoke test
+    build\umix.sys        patched overlay (STI + overlay lock + yield)
+    build\umix86-360.img  boot floppy
+    build\testc.img       test C: image with UMIX.SYS and MUX ON
+
+
+12. RUN THE THREE TASKS AS SEPARATE SCRIPTS
+-------------------------------------------
+
+The bridge is started once.  Then run the three user scripts in three
+separate PowerShell windows so each has its own terminal view:
+
+    Window 1 (BASIC):
+    python basic_user.py --program C:QUICK --done-regex "QUICK DONE 20001"
+
+    Window 2 (shell 1):
+    python shell1_user.py --duration 30
+
+    Window 3 (shell 2):
+    python shell2_user.py --duration 30
+
+The BASIC script prints the raw BASIC terminal, then:
+
+    basic: run=0.xxs status=ok
+
+The two shell scripts print their raw shell terminal, then:
+
+    shell1: 20 cmds  min=... p50=... p95=... max=... ms
+    shell2: 20 cmds  min=... p50=... p95=... max=... ms
+
+Defaults:
+
+    basic_user.py    USER/USER, --program LAB
+    shell1_user.py   USER2/USER2
+    shell2_user.py   SYSTEM/SYS1
+    --start-delay    1.0 s (shell2 adds 0.5 s)
+    --duration       30 s
+    --interval       1.0 s
+
+The BASIC script uses LOAD from C: by default (use --program C:NAME).  If the
+file is not on C:, use --inline demo\QUICK.BAS.  The shell scripts use only
+kernel commands (WHO/PS/ECHO/TIME/MEM); they do not touch the overlay lock.
+
+Copy the current tools\serial_mux.py as well: without its frame-byte pacing
+the BASIC line editor and the shell tasks lose input on real hardware.
+
+run_three.bat
+    Starts the three scripts in three new cmd windows with `start`.  Copy it
+    next to the scripts (or keep it in tools).  The bridge must already be
+    running.  Examples:
+
+        run_three.bat C:QUICK 30
+        run_three.bat C:COMPUTE 60
+        run_three.bat C:LAB 120
+        run_three.bat C:HELLO 15
+
+    Default is C:QUICK with a 30 s shell duration.  The batch file checks for
+    a listener on port 2323; if none is visible it prints the bridge command
+    and stops.  Each window uses `cmd /k`, so the terminal and summary stay
+    visible after the script ends.
+
+
+13. VIDEO DEMO: BASIC + ONE SHELL + TWO CHAT WINDOWS
+----------------------------------------------------
+
+Copy demo\DEMO.BAS to the guest C: root as C:\DEMO.BAS.  It prints ten STEP
+lines and DEMO DONE, so the BASIC task finishes quickly on a 4.77 MHz machine.
+
+Start the bridge, then:
+
+    run_demo.bat
+
+or give the shell window a different duration:
+
+    run_demo.bat 60
+
+It opens four windows with `start`:
+
+    UMIX BASIC      C:DEMO, ten loops, repeated every 3 s
+    UMIX SHELL      USER2, continuous, one command every 2 s
+    UMIX CHAT ALICE chat_user.py --nick ALICE --auto 8 --send-delay 2
+    UMIX CHAT BOB   chat_user.py --nick BOB   --auto 8 --send-delay 2
+
+The shell window is continuous by default (--duration 0) and starts a new
+command every 2 seconds.  The BASIC window runs C:DEMO and repeats it every
+3 seconds (--repeat 0 --repeat-delay 3).  The two chat windows send "Hello
+from ALICE n" / "Hello from BOB n" about every ten seconds (8 s auto interval
++ 2 s send delay), and every typed line also waits 2 seconds after send.  The
+batch starts the windows 5 seconds apart.  Type /QUIT to leave a chat.
+
+For the video:
+
+  1. Arrange the four cmd windows and the emulator's CGA window.
+  2. On the CGA run PS / WHO periodically to show the five task slots
+     (CGA + BASIC + shell + two CHAT).
+  3. Start recording (Windows Game Bar Win+G, OBS, etc.).
+  4. Run run_demo.bat.
+  5. Type a few manual messages in the chat windows if you want a dialogue
+     instead of only the automatic lines.
+
+The BASIC window shows C:DEMO and finishes almost immediately; the shell and
+chat windows keep running.  The shell summary appears after the duration.
+
+14. WEBLOG IN A SYSTEM SERIAL SESSION
+-------------------------------------
+
+The current boot image allows WEBLOG to be enabled by a SYSTEM serial session
+with console privilege, and mirrors each HTTP request line into that session.
+
+On the CGA console:
+
+    MUX ON
+    PRIV ON
+
+Enable the web server if you want requests to serve INDEX.HTM:
+
+    WEB ON
+
+On the SYSTEM serial session:
+
+    USERID: SYSTEM
+    PASSWORD: SYS1
+    UCS> WEBLOG ON
+
+The CGA console and that SYSTEM session now both show lines such as:
+
+    WEB GET / HTTP/1.1
+
+WEBLOG alone reports the state; WEBLOG OFF stops it, and closing/resetting
+the SYSTEM session also clears its serial target.  A non-SYSTEM serial user
+gets "WEB: CONSOLE ONLY"; SYSTEM with PRIV OFF gets the ask-the-console
+message.  The bridge must be started with an --http-listen port if you are
+using the normal HTTP path.
+
+15. TFTP SERVER IN THE GUEST
+----------------------------
+
+The 8088 runs the TFTP server itself (UDP 69).  The bridge is only a UDP
+relay: Windows cannot route to 192.168.99.1, so mux_over_ip.py forwards
+127.0.0.1:6969 to the guest and back.
+
+Prepare the guest (CGA/Hercules console, after boot):
+
+    MUX ON
+    TFTP ON
+    WRITE ON          (only needed for uploads)
+
+or put those lines in C:\STARTUP.JCL (uncommented) so they run at boot.
+TFTP is OFF by default; TFTP alone reports the state.  To watch transfers:
+
+    TFTPLOG ON
+
+That prints the request, a line every 4 KB and a final DONE/ERR line on the
+CGA panel (and on a SYSTEM serial session with PRIV ON that enables it).
+
+Start the bridge with the relay port.  One process can do the serial
+sessions and TFTP together:
+
+    py tools\serial_mux.py --serial COM3 --baud 9600 ^
+        --listen 127.0.0.1:2323 --ip --tftp-listen 127.0.0.1:6969
+
+(Or use mux_over_ip.py if you only need the IP side:)
+
+    py tools\mux_over_ip.py --serial COM3 --baud 9600 --tftp-listen 127.0.0.1:6969
+
+Download and upload from another Windows command prompt:
+
+    py tools\umix_tftp.py get README.TXT
+    py tools\umix_tftp.py put TEST.BAS
+    py tools\umix_tftp.py get C:INDEX.HTM index.htm
+
+The guest advertises blksize 192 (a mux frame is 250 bytes; 28 bytes of IP
+and UDP headers plus the 4-byte TFTP header leave 192, and IP frames are no
+longer byte-stuffed).  It also offers windowsize 1..4 (RFC 7440): up to four
+DATA blocks per cumulative ACK.  umix_tftp.py asks for 4; atftp needs
+--option "windowsize 4".  A
+client that does not negotiate blksize cannot be served: Windows' built-in
+tftp.exe and curl (minimum 512) will fail with ERROR 8 "BLKSIZE REQUIRED".
+Use the bundled client, atftp with --option "blksize 192" --option "windowsize 4", or PumpKIN.
+On real hardware add --tftp-timeout 10 --prevent-sas to atftp: the guest
+retransmits after ~2 s (independent of QUANTUM) and an old ACK re-sends the
+current DATA immediately, but a longer client delay avoids duplicate storms.
+
+Limits: one transfer at a time (a second request gets ERROR 0 BUSY); GET
+streams any file up to the 64 KB FAT limit; PUT streams straight into the FAT
+and has the same 64 KB limit (no staging buffer) but needs WRITE ON; names are 8.3, root directory, no
+extension unless you type one.  Stop-and-wait at 9600 baud gives roughly
+850 B/s with windowsize 4, so 4 KB takes about 5 seconds and 8 KB about 10.
+
+The server is ticked from the shell's idle loop.  A running BASIC program
+or a non-yielding RUN task stops it until the prompt returns.  TFTP has no
+authentication; leave it OFF when you are not using it.
+
+Scripted QEMU test (Linux/macOS): build the C: image with the startup
+switches and run the round-trip test:
+
+    ./build.sh && UMIX_MUX=1 UMIX_TFTP=1 python3 tools/mkfat.py
+    python3 tools/tftp_test.py          (mux_over_ip relay)
+    python3 tools/combined_test.py      (one serial_mux: session + TFTP)
+
+16. SLIP (LINUX HOST ONLY)
+----------------------------
+
+COM1 can be a raw SLIP line instead of the mux:
+
+    CONSOLE> MUX OFF
+    CONSOLE> SLIP ON
+
+On Linux:
+
+    slattach -p slip -s 9600 /dev/ttyUSB0
+    ifconfig sl0 192.168.99.2 pointopoint 192.168.99.1 mtu 250 up
+    ping 192.168.99.1
+    tftp 192.168.99.1 get README.TXT
+
+MTU 250 (a mux frame).  ICMP, UDP/TFTP and (with TCP.SYS loaded) TCP/HTTP
+work.  SLIP and MUX are exclusive; SLIP OFF returns to the raw serial
+console.
+SLIP SHOW prints the state, the static guest IP (192.168.99.1), MTU and
+RX/TX/error counters.  Windows has no SLIP.
+
+17. TCP AND HTTP OVER SLIP (LINUX HOST)
+---------------------------------------
+
+Copy build\tcp.sys (2,815 bytes, SHA256
+abad04316cc6700487f741e82946d00450d7c01718a33463518c1316e13b0d31)
+to C:\TCP.SYS, then at the CGA console:
+
+    MUX OFF
+    SLIP ON
+    TCP ON
+
+On Linux (SLIP already up):
+
+    curl -v http://192.168.99.1/
+
+Only / serves INDEX.HTM; other paths return 404.HTM.  One connection at a
+time, HTTP/1.0, MSS 200, response bodies up to 8,900 bytes.
+
+MTU AND FRAGMENTATION - read this first
+    The SLIP link carries at most 250 bytes of IP.  Anything bigger is
+    fragmented by the host (DF=0) or dropped (DF=1) before the guest sees it,
+    and the guest has no reassembly.  Symptoms found in the field:
+
+      * a PC's 488-byte GET arrives as 244-byte fragments; the guest used to
+        parse the first one as a complete segment and acknowledge 204 bytes
+        it had not received (that is the "ACK 205" in io5.pcap);
+      * an iPhone sets DF=1, so its 256-byte request segments are dropped by
+        the host and the guest answers nothing at all.
+
+    Clamp the MSS on the host so clients never send more than 200 bytes:
+
+        iptables -t mangle -A FORWARD -o sl0 -p tcp \
+                 --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 200
+
+    V0R121 also drops any IP fragment (MF set or non-zero offset) instead of
+    mis-parsing it.
+
+V0R121 server behaviour a browser depends on:
+
+  * a retransmitted GET data segment is re-ACKed and not appended again, and
+    the response is built exactly once per request (req_done);
+  * a request longer than the 220-byte parse buffer still advances the
+    sequence past the whole segment, so the client stops retransmitting;
+  * only a FIN from the connection's own IP + port frees the TCB;
+  * a FIN carrying data no longer drops the payload or kills the page, and a
+    half-close during the transfer only ends the client's send direction;
+  * a delayed or duplicate ACK does not trigger an immediate resend;
+  * after "Connection: close" and the client's FIN the TCB is freed at once;
+  * a SYN that arrives while a page is being sent is ignored, so parallel
+    browser sockets cannot abort the transfer;
+  * a SYN from another socket can NO LONGER steal an established TCB just
+    because nothing is in flight.  That window (SYN-ACK sent, GET not yet
+    arrived) is exactly when a browser fires its 5 other connects, and it
+    killed the page socket: chrome failed, curl (one socket) worked.  A TCB
+    is taken over immediately while it has not carried a request (a
+    browser's preconnect), and only after ~3 s of silence once a request is
+    being served - V0R87 made requestless TCBs sticky and that broke browsers;
+  * an RST from an abandoned preconnect socket no longer resets the server.
+    Chrome closes unused sockets with RST, not FIN, so the FIN peer check
+    alone was not enough - any RST wiped the connection being served.
+    RST is now only honoured from the owning IP + port;
+  * a late SYN retransmit on the same socket does not re-handshake (and
+    reset) a live connection either;
+  * "/favicon.ico" (any .ico in the request line) gets a 66-byte empty 404.
+
+    The overlay prints its build on the console after TCP ON:
+        TCP.SYS V0R121 - HTTP SERVER ON :80
+
+Host-side tests (QEMU) - the C: image must be built WITHOUT UMIX_MUX:
+
+    ./build.sh && UMIX_TCP=1 UMIX_BIGWEB=1 UMIX_TFTP=1 python3 tools/mkfat.py
+    python3 tools/tcp_test.py      (handshake + GET + checksums)
+    python3 tools/tcp_test2.py     A duplicate GET, B second connection,
+                                   C intruder SYN, D 417-byte request,
+                                   E favicon 404, F stray FIN, G FIN with
+                                   data, H half-close, I 216-byte segments,
+                                   J IP fragment ignored, K parallel SYN
+                                   after handshake, L stale TCB recycled,
+                                   M stray RST, N late SYN on same socket
+
+TCPLOG ON prints each request on the CGA panel, e.g.
+
+    TCP 192.168.99.2:40000 GET / HTTP/1.1
+
+(the address is the peer the guest sees; behind the SLIP host's NAT it will be
+192.168.99.2).  TCPLOG is console-only.
+TCP.SYS and CHAT.SYS share the 0x2900 overlay window.
+
+End of file.

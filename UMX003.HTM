@@ -1,0 +1,65 @@
+<!doctype html><html><head><meta charset="utf-8"><title>UMIX/86 - MUX and TCP/IP</title>
+<style>
+body{font:13px/1.45 monospace;background:#111;color:#ddd;margin:14px;max-width:74em}
+h1{font-size:15px;color:#6cf;margin:0 0 4px}
+nav{font-size:12px;border-bottom:1px solid #333;padding-bottom:6px;margin:0 0 12px}
+nav a{color:#8cf;margin-right:10px;white-space:nowrap;text-decoration:none}
+nav a:hover{color:#cff}
+h2{font-size:13px;color:#9df;margin:14px 0 4px}
+a{color:#8cf}a:hover{color:#cff}
+table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid #2a2a2a;padding:2px 8px 2px 0;text-align:left;vertical-align:top}
+code,.k{color:#cfc} .w{color:#fc6}
+pre{background:#000;border:1px solid #333;padding:8px;overflow:auto;line-height:1.35}
+</style></head><body>
+<h1>UMIX/86 - MUX and TCP/IP</h1>
+<nav><a href="/">Overview</a><a href="/UMX002.HTM">OS</a><a href="/UMX003.HTM">MUX + TCP/IP</a><a href="/UMX004.HTM">Services + BASIC</a><a href="/UMX005.HTM">Terminals</a><a href="/UMX006.HTM">Web API</a><a href="/UMX007.HTM">Chat</a><a href="/EXPLORER.HTM">API explorer</a></nav>
+
+<h2>Framed MUX protocol</h2>
+<p>The terminal link is a byte stream carrying variable-length frames:</p>
+<pre>
+02  | type | termid | len | payload (0..250) | XOR | 03
+STX           1..10           0x02  STX, 0x03 ETX, XOR covers type..payload
+</pre>
+<table>
+<tr><th>type</th><th>meaning</th></tr>
+<tr><td>01 DATA</td><td>terminal input/output</td></tr>
+<tr><td>02 OPEN</td><td>claim a terminal; payload[0] = app id</td></tr>
+<tr><td>03 CLOSE</td><td>session finished</td></tr>
+<tr><td>04 BUSY</td><td>no free serial session</td></tr>
+<tr><td>05 ACK</td><td>OPEN accepted</td></tr>
+<tr><td>06 ERROR</td><td>protocol error</td></tr>
+</table>
+<p>Terminal id <code>0</code> is the guest console log; <code>1..10</code> are
+serial sessions; <code>0xFE</code> is the IP channel. Apps: 1 console/shell,
+2 web, 3 upload. OPEN may carry a printable line (client address) that the
+guest logs on the console.</p>
+
+<h2>Flow control</h2>
+<p>Each session has a 256-byte receive ring and a 64-byte transmit buffer; a
+newline flushes the transmit buffer as a frame. The guest UART has no FIFO, so
+the bridge paces input: 64-byte chunks for web/upload, 8-byte frames with a
+10 ms gap for console input. A full transmit buffer drops bytes, never
+overruns.</p>
+
+<h2>Host bridge</h2>
+<table>
+<tr><th>bridge option</th><th>gives you</th></tr>
+<tr><td><code>--listen</code></td><td>raw TCP terminal sessions (app 1)</td></tr>
+<tr><td><code>--http-listen</code></td><td>web requests (app 2) to the guest web server</td></tr>
+<tr><td><code>--upload-listen</code></td><td>PUT uploads (app 3)</td></tr>
+<tr><td><code>--ip --tftp-listen</code></td><td>UDP relay and TFTP</td></tr>
+</table>
+
+<h2>TCP/IP stack</h2>
+<p>The kernel has IPv4, ICMP and UDP. It answers ping, carries the terminal
+session over UDP, and runs an in-guest TFTP server on UDP 69. For TCP, the
+guest loads <code>TCP.SYS</code> at <code>0x2900</code>: a SLIP link at 9600
+baud with a proto-6 mailbox, ARP, TCP and a small HTTP server. The host runs
+<code>slattach</code>/<code>ifconfig</code> and points a browser at
+<code>192.168.99.1</code>.</p>
+<p class="w">MUX and TCP are mutually exclusive: both use the 0x2900 window
+and the same serial link. The pages you are reading went through MUX, not
+TCP.SYS.</p>
+
+</body></html>

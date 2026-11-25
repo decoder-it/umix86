@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>UMIX/86 chat</title>
+<style>
+body{font:14px monospace;background:#111;color:#ddd;margin:12px}
+input,button{font:inherit;background:#1b1b1b;color:#ddd;border:1px solid #444;padding:3px 6px}
+#log{height:260px;overflow:auto;border:1px solid #444;padding:4px;white-space:pre-wrap;background:#0b0b0b}
+#u,#st{color:#8a9bb0;min-height:1.3em;font-size:12px}
+.hide{display:none}
+</style>
+<h3>UMIX/86 chat</h3>
+<div id="j"><input id="n" maxlength="9" size="9" placeholder="nick 2-9">
+<button onclick="join()">Join</button></div>
+<div id="s" class="hide"><input id="m" maxlength="50" size="46" placeholder="message, max 50">
+<button onclick="send()">Send</button><button onclick="leave()">Leave</button></div>
+<div id="u"></div><div id="log"></div><div id="st"></div>
+<script>
+// Served by the guest itself, so relative /api paths are same-origin.
+let tok=null,since=0,q=Promise.resolve(),t=0,pd=-1;
+const $=id=>document.getElementById(id);
+function ser(f){q=q.then(f,f);return q}
+async function api(m,p,b){
+  let r=await fetch(p,{method:m,headers:b?{'Content-Type':'application/json'}:{},
+    body:b?JSON.stringify(b):null});
+  let x=await r.text(),j;
+  try{j=JSON.parse(x)}catch(e){j={error:x.trim()}}
+  if(!r.ok){let e=new Error(j.error||('HTTP '+r.status));e.status=r.status;throw e}
+  return j}
+function say(s,c){let d=document.createElement('div');if(c)d.className=c;
+  d.textContent=s;$('log').appendChild(d);$('log').scrollTop=$('log').scrollHeight}
+function st(s){$('st').textContent=s||''}
+function join(){
+  let n=$('n').value.trim();if(!n){st('nickname?');return}
+  ser(async()=>{try{
+    let j=await api('POST','/api/chat/join',{nick:n});
+    tok=j.token;since=0;t=0;
+    $('j').classList.add('hide');$('s').classList.remove('hide');$('m').focus();
+    st('joined '+n.toUpperCase()+' (token '+tok+')');
+    say('*** joined as '+n.toUpperCase());
+    await tick(1)}catch(e){st(e.message)}})}
+function send(){
+  let m=$('m').value;if(!m)return;
+  st('sending...');
+  ser(async()=>{try{
+    let r=await api('POST','/api/chat/send',{token:tok,text:m});
+    pd=r.seq;say('me: '+m);
+    $('m').value='';$('m').focus();st('');await tick(1)
+  }catch(e){st(e.message)}})}
+function leave(){
+  ser(async()=>{
+    try{await api('DELETE','/api/chat/join/'+tok)}catch(e){}
+    tok=null;$('s').classList.add('hide');$('j').classList.remove('hide');
+    $('u').textContent='';st('left');say('*** left')})}
+async function tick(f){
+  if(!tok||(document.hidden&&!f))return;
+  try{
+    let m=await api('GET','/api/chat/messages/'+since);
+    if(m.latest<since)since=m.latest;
+    for(let x of m.messages||[]){
+      if(x.seq===pd){pd=-1;continue}
+      say(x.seq+': '+x.text)}
+    since=m.latest;
+    if(f||(t++%5)===0){
+      let u=await api('GET','/api/chat');
+      let a=u.nicks.concat(u.api).join(' ');
+      $('u').textContent='users: '+(a||'-')}
+    st('')
+  }catch(e){
+    st(e.message);
+    if(e.status===400){
+      tok=null;$('s').classList.add('hide');$('j').classList.remove('hide');
+      st('token expired - join again')}}}
+setInterval(()=>ser(tick),1500);
+</script>

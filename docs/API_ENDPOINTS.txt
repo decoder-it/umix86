@@ -1,0 +1,959 @@
+==============================================================================
+ UMIX/86 HTTP API - ENDPOINT REFERENCE AND CLIENT EXAMPLES
+  Build: V0R138   API overlay: API.SYS v13   Header: X-API-Version: 13
+==============================================================================
+
+This file describes every /api endpoint and shows how to call it from
+curl (Linux, macOS, Git Bash, or curl.exe on Windows) and from
+PowerShell 5.1 / PowerShell 7.
+
+The API is served by the UMIX/86 guest. The host-side Python bridge
+(tools/serial_mux.py --http-listen) is only a byte relay: it accepts an
+HTTP connection, opens a session on the serial link, forwards the bytes,
+and returns the guest's reply. All application logic and JSON live in the
+guest overlay (C:\API.SYS, loaded at 0x9000).
+
+
+------------------------------------------------------------------------------
+ 1. BASE URL AND PREREQUISITES
+------------------------------------------------------------------------------
+
+The guest must be running with the serial bridge in framed multiplex mode
+("MUX ON" in STARTUP.JCL), and the bridge must be started with an HTTP
+listener, for example:
+
+    python3 tools/serial_mux.py --serial /dev/ttyUSB0 \
+        --http-listen 0.0.0.0:80
+
+On the host, port 80 normally requires root. Use a high port for testing:
+
+    python3 tools/serial_mux.py --serial unix:/tmp/umix-ser.sock \
+        --http-listen 127.0.0.1:8080
+
+Examples below use a base URL variable. Replace it with your bridge host
+and port. The guest's own address is not the API address: connect to the
+machine running serial_mux.py.
+
+    Linux / macOS / Git Bash:    BASE=http://192.168.1.16
+    PowerShell:                  $base = "http://192.168.1.16"
+
+Local QEMU harness:
+
+    BASE=http://127.0.0.1:8080
+    $base = "http://127.0.0.1:8080"
+
+
+------------------------------------------------------------------------------
+ 2. CONVENTIONS
+------------------------------------------------------------------------------
+
+* Protocol: HTTP/1.0, one request per connection
+  (the guest always sends "Connection: close"). Do not rely on keep-alive.
+* Successful responses carry:
+      Content-Type: application/json
+      X-API-Version: 13
+      Content-Length: <exact byte count>
+  Content-Length counts the CR characters the kernel inserts before LF, so
+  it is exact for the bytes on the wire.
+* Bodies are JSON. Any JSON parser is fine.
+* Unknown paths under /api return 404 with the plain-text body "not found".
+  Job errors return small JSON objects such as {"error":"not found"}.
+* There is no authentication. Anyone who can reach the bridge can read the
+  API, queue jobs, or cancel them. Keep the listener on a trusted network.
+
+
+------------------------------------------------------------------------------
+ 2b. BROWSER EXPLORER (C:\INDEX.HTM)
+------------------------------------------------------------------------------
+
+The guest serves tools/api_explorer.html as C:\INDEX.HTM (3,334 bytes;
+the guest's static-page limit is 4,000).  Open:
+
+    http://HOST/
+
+It lists every endpoint as a button, has method/URL/body fields, job
+shortcuts (prime 1000, sort list, crc hello), job detail/result/cancel,
+the /api/routes listing, and pretty-prints the status, Content-Length,
+X-API-Version and JSON.  Because the page is served by the guest itself,
+its /api calls are same-origin: no CORS headers are needed.
+
+Deploy it (it already ships in the QEMU C: image):
+
+    python3 tools/umix_put.py HOST:UPLOAD tools/api_explorer.html INDEX.HTM
+
+or rebuild the C: image; tools/mkfat.py reads the file for INDEX.HTM.
+Keep the file under 4,000 bytes or it is truncated (mkfat checks this).
+
+The bridge serializes web sessions from OPEN because the guest's HTTP
+parser state (web_path, web_state, ...) is global.  Without that, a
+browser's simultaneous document + favicon requests clobber each other.
+The page also suppresses the favicon and serializes its own calls.  A
+different web front end (TCP.SYS) bypasses the bridge lock, so use the
+serial_mux HTTP listener for concurrent clients.
+
+Routes are still registered from the guest shell (API ROUTE); the page
+tests the routes already registered and lists them.
+
+------------------------------------------------------------------------------
+ 3. ENDPOINT SUMMARY
+------------------------------------------------------------------------------
+
+  Method  Path                       Purpose
+  ------  -------------------------  --------------------------------------
+  GET     /api                       catalogue of endpoints
+  GET     /api/system                OS, CPU, RAM, task count, uptime
+  GET     /api/tasks                 number of live tasks
+  GET     /api/memory                RAM size and status
+  GET     /api/who                   logged-in serial users
+  GET     /api/whoami                user of the current console session
+  GET     /api/ps                    task table: slot/app/term/state/seg/user
+  GET     /api/users                 user account names (names only)
+  GET     /api/speed                 baud, scheduler tick rate, CPU line
+  GET     /api/time                  wall-clock time h/m/s
+  GET     /api/version               OS/kernel/API version
+  GET     /api/status                feature bits and SLIP counters
+  GET     /api/chat                  chat-room users + API session nicks
+  POST    /api/chat/join             claim a chat nickname -> token
+  POST    /api/chat/send             broadcast text as a token's nickname
+  GET     /api/chat/messages[/N]     history newer than sequence N
+  DELETE  /api/chat/join/{token}     release a nickname/token
+  GET     /api/apps                  job applications and descriptions
+  GET     /api/hello                 built-in BASIC demo route
+  GET     /api/<route>               a BASIC route registered with API ROUTE
+  GET     /api/routes                registered route paths (JSON)
+  POST    /api/<route>               route with a body (M$=POST, B$)
+  DELETE  /api/<route>               route (M$=DELETE)
+  GET     /api/jobs                  retained jobs
+  POST    /api/jobs                  queue a job         (202 Accepted)
+  GET     /api/jobs/{id}             job detail
+  GET     /api/jobs/{id}/result      completed job's result
+  DELETE  /api/jobs/{id}             request cancellation
+
+  Status codes:
+    200 OK                  normal GET / DELETE reply
+    202 Accepted            job queued
+    400 Bad Request         malformed JSON, unknown app, bad path
+    404 Not Found           unknown endpoint or job id
+    409 Conflict            result not ready, or job already finished
+    413 Payload Too Large   request body exceeded 767 bytes
+    500 Internal Server Error route program failed or timed out
+    503 Service Unavailable job table full / BASIC is busy
+
+
+------------------------------------------------------------------------------
+ 4. SYSTEM ENDPOINTS (GET)
+------------------------------------------------------------------------------
+
+Example responses are from a typical running system; values such as
+tasks, uptime, time, and counters change.
+
+GET /api
+  {"endpoints":[
+  "/api/system","/api/tasks","/api/memory","/api/who"
+  ,"/api/whoami","/api/ps","/api/users","/api/speed"
+  ,"/api/time","/api/version","/api/status","/api/chat"
+  ,"/api/apps","/api/jobs","/api/hello","/api/routes"
+  ,"/api/chat/join","/api/chat/send","/api/chat/messages"
+  ,"/api/demo","/api/echo"]}
+
+GET /api/system
+  {"os":"UMIX","version":"0.3","cpu":"Intel 8088","ram_kb":640,
+   "tasks":2,"uptime":24}
+  tasks counts live tasks; uptime is scheduler ticks divided by 18.
+
+GET /api/tasks
+  {"count":2}
+
+GET /api/memory
+  {"ram_kb":640,"status":"ok"}
+
+GET /api/who
+  {"count":1,"users":["SYSTEM"]}
+  Lists users logged on to serial sessions (the web request itself is not
+  a logged-on console).
+
+GET /api/whoami
+  {"user":""}
+  User attached to the console session (empty when nobody is logged on).
+
+GET /api/ps
+  {"count":2,
+   "services":{"web":1,"weblog":0,"slip":0,"mux":1,"tftp":0,"priv":0},
+   "tasks":[
+     {"slot":0,"name":"CGA-SHELL","app":"console","term":0,
+      "state":"ready","seg":"1000","user":"CONSOLE"},
+     {"slot":1,"name":"SER-SHELL","app":"serial","term":1,
+      "state":"ready","seg":"1000","user":"USER"}]}
+  count is the number of active tasks. services mirrors the bitfield that
+  /api/status reports (WEB, WEBLOG, SLIP, MUX, TFTP, PRIV). Each active task
+  carries its slot (0 = CGA console, 1..10 = serial, 11..12 = programs), task
+  name, app kind (console/serial/web/upload/program), terminal id, state,
+  code segment (hex) and login user (empty for an unauthenticated web
+  request; slot 0 reports CONSOLE).
+  Data comes from INT 60h AH=33 (task-table offsets) plus AH=22/29/24/25.
+
+GET /api/users
+  {"count":3,"users":["SYSTEM","USER","USER2"]}
+  Names only. INT 60h AH=27 returns a standalone, NUL-terminated copy
+  of the 8-byte account name (never a pointer into the record), so no
+  reader can reach the password field at +10. Imported user files are
+  canonicalized at load time and their unused tail is cleared.
+
+GET /api/speed
+  {"baud":9600,"tick_hz":18,"cpu":"MEASURED CPU: N/A (TOO FAST)"}
+  tick_hz is the scheduler rate. The CPU line depends on the SPEED
+  measurement; it may be "N/A" when the machine is too fast to time.
+
+GET /api/time
+  {"h":20,"m":55,"s":21}
+
+GET /api/version
+  {"os":"UMIX","version":"0.3","kernel":"V0R124"
+  ,"api":6,"cpu":"Intel 8088","ram_kb":640}
+  The body contains an LF (JSON whitespace) after the kernel field.
+
+GET /api/status
+  {"web":1,"weblog":0,"slip":0,"mux":1,"tftp":0,"priv":0,
+   "rx":0,"tx":0,"err":0}
+  Feature bits: web server, weblog, SLIP, mux, TFTP, PRIV. rx/tx/err are
+  SLIP counters.
+
+GET /api/chat
+  {"count":0,"nicks":[],"api":["ALICE"],"latest":4}
+  count/nicks are live terminal chat participants (INT 60h AH=30); api is
+  the list of nicknames claimed through POST /api/chat/join; latest is the
+  newest history sequence number.
+
+
+------------------------------------------------------------------------------
+ 4a. CHAT OVER HTTP
+------------------------------------------------------------------------------
+
+The kernel's line chat room (entered by typing CHAT at the USERID: prompt)
+and the HTTP API share one message history in the unused 0x2900 window.
+`CHAT OFF` on the console disables both layers: the room is closed and every
+/api/chat* endpoint returns 503 until `CHAT ON`.  Chat is ON by default.
+Terminal users see API messages and vice versa.  Requires MUX on and
+SLIP/TCP off; otherwise the chat endpoints answer 503.
+
+Nicknames are alphanumeric, 2..9 characters, upcased; SYSOP is reserved.
+A join appends "<NICK>: JOINED CHAT" to the history (broadcast to terminal
+chat users); a leave appends "<NICK>: LEFT CHAT".  The terminal /WHO command
+prints the live terminal nicks and then an "API: <nicks>" line.
+
+POST /api/chat/join      body {"nick":"ALICE"}
+  200 {"token":1}
+  Claims a nickname for an API client. 409 if it is already in use (terminal
+  or another API session), 400 if the nickname is invalid.
+
+POST /api/chat/send      body {"token":1,"text":"hello"}
+  202 {"seq":1}
+  Broadcasts "ALICE: hello" to terminal chat participants and appends it to
+  the history.  Text is limited to 50 characters; control characters and
+  quotes are stripped and backslash becomes '/'.  400 on a bad token.
+
+GET /api/chat/messages        history newer than 0 (everything retained)
+GET /api/chat/messages/3      history newer than sequence 3
+  200 {"latest":5,"messages":[
+        {"seq":4,"text":"BOB: hi"},
+        {"seq":5,"text":"ALICE: hello"}]}
+  The ring keeps the last 16 lines (about 61 characters each).  Poll with the
+  last seq you saw as /N; latest is the newest seq and may advance past what
+  fits in one reply.
+
+DELETE /api/chat/join/1
+  200 {"ok":true}
+  Releases token 1 (the nickname disappears from /api/chat's "api" list).
+
+INT 60h additions used by the overlay:
+  AH=34  DS:SI = "nick\0text\0" -> AX = sequence (broadcast + append)
+  AH=35  BX = since, ES:DI = buffer -> AX = next record seq (0 = none);
+         buffer receives db len, text, NUL.
+History and tokens live in segment 0x2900, which is CHAT.SYS/TCP.SYS's
+overlay window; they are reset by reboot, a SYS reload, or loading TCP.SYS.
+
+
+------------------------------------------------------------------------------
+ 4b. BASIC-SERVED ROUTES
+------------------------------------------------------------------------------
+
+A route is a BASIC program on C: registered to a URL path.  The API overlay
+asks UMIX.SYS through INT 62h; the interpreter's PRINT output (strings,
+messages and numbers) is captured into the HTTP body.  P$, Q$, M$ and B$
+are preset: path, query, method ("GET"/"POST"/"DELETE") and the first 63
+characters of the request body.
+
+Register and test (from the shell, console or a serial session):
+
+    * API ROUTE /api/demo APIHELLO.BAS
+    ROUTE ADDED
+    $ curl -s http://HOST/api/demo
+    {"route":1,
+    "path":"/api/demo",
+    "q":""}
+    $ curl -s "http://HOST/api/demo?x=1"
+    {"route":1,
+    "path":"/api/demo",
+    "q":"x=1"}
+    $ curl -s -X POST -d '{"x":1}' http://HOST/api/demo
+    ... "m":"POST","blen":7}
+    $ curl -s -X DELETE http://HOST/api/demo
+    ... "m":"DELETE","blen":0}
+    $ curl -s http://HOST/api/routes
+    {"routes":["/api/demo"]}
+    $ curl -s http://HOST/api
+    {"endpoints":[...,"/api/routes","/api/demo"]}
+
+Manage the table:
+
+    * API ROUTES             list registered routes
+    * API DEL /api/demo      remove one
+
+Subcommands are case-insensitive and tolerate trailing spaces (V0R131+):
+"api routes", "API ROUTES " and "api route ..." all work.  /api lists the
+static endpoints plus every registered route path; /api/routes returns
+{"routes":[...]} and API ROUTES shows the file names too.
+
+The image ships C:\APIHELLO.BAS, C:\ECHO.BAS and demo registrations in
+C:\STARTUP.JCL (/api/demo and /api/echo);
+STARTUP.JCL runs after UMIX.SYS loads, so routes come back after every boot.
+The table is RAM only (4 entries).  A reboot, a guest reset, or `SYS`
+(reload UMIX.SYS) clears it -- put your own API ROUTE lines in
+C:\STARTUP.JCL to persist them.  `API ON` reloads API.SYS only and does
+NOT clear the route table.
+
+Writing the program:
+
+    10 PRINT "{";CHR$(34);"ok";CHR$(34);":1}"
+
+Use CHR$(34) for quotes (no escape sequences).  P$ = request path (without
+the query), Q$ = query string after '?', M$ = method, B$ = body (first 63
+characters).  The program must PRINT valid JSON.  Branch on M$ if a route
+should only accept one method; the route table itself does not restrict it.
+Author it in BASIC (WRITE ON, then SAVE C: NAME.BAS) or upload it (mux
+upload or TFTP).
+
+POST example (end to end)
+-------------------------
+
+BASIC lines live in 64-byte slots: a line may be at most 61 characters.
+A longer line is truncated, silently dropping trailing items (a common
+cause of "valid JSON" that is not: a missing comma).  Keep PRINT lines
+short and split long output across several lines.
+
+Program ECHO.BAS -- accepts only POST and reports the method and body
+length.  It is safe for JSON and plain-text bodies:
+
+    10 IF M$="POST" THEN GOTO 30
+    20 PRINT "{";CHR$(34);"error";CHR$(34);":";CHR$(34);
+    25 PRINT "POST";CHR$(34);"}": END
+    30 PRINT "{";CHR$(34);"m";CHR$(34);":";CHR$(34);M$;CHR$(34);","
+    40 PRINT CHR$(34);"blen";CHR$(34);":";LEN(B$);"}"
+
+Create it on the guest (the image already ships ECHO.BAS):
+
+    * BASIC
+    > 10 IF M$="POST" THEN GOTO 30
+    > 20 PRINT "{";CHR$(34);"error";CHR$(34);":";CHR$(34);
+    > 25 PRINT "POST";CHR$(34);"}": END
+    > 30 PRINT "{";CHR$(34);"m";CHR$(34);":";CHR$(34);M$;CHR$(34);","
+    > 40 PRINT CHR$(34);"blen";CHR$(34);":";LEN(B$);"}"
+    > WRITE ON
+    > SAVE C: ECHO.BAS
+    > SYSTEM
+
+Register it (and add the same line to C:\STARTUP.JCL to keep it after a
+reboot):
+
+    * API ROUTE /api/echo ECHO.BAS
+    ROUTE ADDED
+
+Call it with curl:
+
+    curl -s -X POST http://HOST/api/echo \
+         -H "Content-Type: application/json" \
+         -d '{"x":1}'
+    # {"m":"POST",
+    #  "blen":7}
+
+    curl -s -X POST http://HOST/api/echo -d 'hello'
+    # {"m":"POST",
+    #  "blen":5}          (non-JSON body: waits ~1.6 s)
+
+    curl -s -X POST http://HOST/api/echo -d ''
+    # {"m":"POST",
+    #  "blen":0}          (empty body: waits ~1.6 s)
+
+Call it with PowerShell:
+
+    Invoke-RestMethod -Uri "http://HOST/api/echo" -Method Post `
+        -ContentType "application/json" -Body '{"x":1}'
+
+    # or build the body:
+    $body = @{ x = 1 } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Uri "http://HOST/api/echo" -Method Post `
+        -ContentType "application/json" -Body $body
+
+    # m     blen
+    # -     ----
+    # POST     7
+
+A GET to /api/echo runs the same program; line 10 sees M$="GET" and prints
+{"error":"POST"} with HTTP 200.  The route table does not enforce methods --
+the program does.
+
+To echo the body as JSON, send a JSON body and use a raw-value echo (keep
+each PRINT within 61 characters):
+
+    10 IF M$="POST" THEN GOTO 30
+    20 PRINT "{";CHR$(34);"error";CHR$(34);":";CHR$(34);
+    25 PRINT "POST";CHR$(34);"}": END
+    30 PRINT "{";CHR$(34);"echo";CHR$(34);":"
+    40 IF LEN(B$)=0 THEN PRINT "null}" ELSE PRINT B$;"}"
+
+    curl -s -X POST http://HOST/api/echo -d '{"x":1}'
+    # {"echo":{"x":1}}
+
+Do not put B$ inside a JSON string: B$ can contain quotes.  B$ is the first
+63 characters only; LEN(B$) is the truncated length.  The HTTP body read is
+capped at 767 bytes (413 beyond), and a non-JSON body waits ~30 ticks (~1.6 s)
+before the route runs.  A POST to a built-in endpoint such as /api/system is
+not a route and answers 404 after the body is read.
+
+Rules and limits:
+
+  * GET, POST and DELETE are routed.  A POST body is read until the JSON
+    object closes, or for ~30 ticks (~1.6 s) for a non-JSON body; max 767
+    bytes (413 beyond).  BASIC sees the first 63 characters in B$.
+  * 4 routes; path at most 19 characters and must start with /api/; file
+    name at most 15 characters (8.3 on C:, .BAS by default).
+  * The .BAS file is read on each request (max 4095 bytes).
+  * Output is capped at the 767-byte API body buffer; a longer program or
+    one that runs longer than ~90 ticks (~5 s) answers 500 route failed.
+  * While an interactive BASIC session is active the route answers
+    503 route busy (interpreter state is global).
+  * A missing .BAS file also answers 500 route failed.
+  * Query strings work on routes.  Built-in JSON endpoints (/api/system,
+    /api/jobs, ...) do not accept a query string and answer 404 if one is
+    appended.  /api/hello is handled in UMIX.SYS and does accept one.
+  * API OFF disables all /api (including routes); API ON reloads API.SYS
+    but does NOT clear the route table.  Reloading UMIX.SYS with SYS does
+    clear the table; re-run the API ROUTE lines or reboot.
+
+------------------------------------------------------------------------------
+ 5. JOB ENDPOINTS
+------------------------------------------------------------------------------
+
+Jobs are computed by the API overlay itself, one at a time, in slices
+driven by the guest's idle hook. A successful POST means the job entered
+the queue; it does not mean execution has started.
+
+Applications:
+
+  app     parameters                              result
+  ------  --------------------------------------  ----------------------
+  prime   limit: upper bound, 2..5000 (1000)      {"prime_count":N}
+
+  sort    values: array of strings, up to 12      {"count":N,
+          (sort them and return the list)          "values":[...]}
+          OR
+          limit: element count, 2..32 (32)       {"count":N,
+          seed: LCG seed, 0..65535 (1)             "checksum":C}
+
+  crc16   data: string to checksum, up to 255 B   {"crc":C}
+          OR
+          values: array of strings                {"crc":C}
+          (the strings are concatenated)
+          OR
+          limit: generated byte count, 1..1024    {"crc":C}
+          seed: LCG seed, 0..65535 (1)
+
+  Values in parentheses are defaults. Out-of-range numeric limits are
+  clamped; invalid string lists are rejected with 400.
+
+  Sort with "values":
+    - up to 12 strings per job, at most 15 characters each;
+    - plain ASCII bytes, compared byte by byte, ascending, case-sensitive
+      ("Apple" < "Zebra" < "apple");
+    - no JSON escape sequences are decoded, so do not put a double quote
+      or backslash inside a string;
+    - the sorted list is returned and retained per job, so
+      /api/jobs/{id}/result keeps working until the entry is recycled.
+    Example: {"app":"sort","params":{"values":["apple","pie","banana"]}}
+      -> {"count":3,"values":["apple","banana","pie"]}
+
+  Sort without "values" keeps the original numeric benchmark: it generates
+  "limit" unsigned 16-bit values from "seed" with the LCG
+      x = (x * 25173 + 13849) mod 65536
+  bubble-sorts them ascending, and returns the checksum (sum mod 65536).
+  For seed 7, limit 16 the checksum is 632.
+
+  crc16 with "data" (or with "values", whose strings are concatenated)
+  computes CRC-16/CCITT-FALSE over the supplied bytes. With neither, it
+  keeps the generated-bytes benchmark (limit 256, seed 1 -> 14391).
+    Examples: {"app":"crc16","params":{"data":"hello"}}    -> crc 53870
+              {"app":"crc16","params":{"values":["ab","cd"]}} -> crc 11510
+
+Job states: queued, running, completed, cancelled, failed, cancel_requested.
+At most one job runs at a time; the rest wait in job-id order.
+
+POST /api/jobs
+  Request body (compact JSON is best; the body is capped at 767 bytes):
+      {"app":"prime","params":{"limit":1000}}
+  Response: 202 Accepted
+      {"job_id":1,"status":"queued"}
+
+GET /api/jobs
+  Response: 200 OK
+      {"jobs":[
+        {"job_id":1,"app":"prime","status":"completed"},
+        {"job_id":2,"app":"sort","status":"running"}]}
+
+GET /api/jobs/{id}
+  Response: 200 OK. "result" appears only when completed, and
+  "execution_ticks" appears once the job has started.
+      {"job_id":1,"app":"prime","status":"completed",
+       "result":{"prime_count":168},"execution_ticks":1}
+  While queued or running:
+      {"job_id":2,"app":"sort","status":"running","execution_ticks":3}
+  execution_ticks is elapsed scheduler ticks (18.2 Hz), not exclusive CPU
+  time. It is at least 1 for a completed job and omitted before it starts.
+
+GET /api/jobs/{id}/result
+  Completed: 200 OK
+      {"job_id":1,"result":{"prime_count":168}}
+  Not ready (queued/running) or cancelled: 409 Conflict
+      {"error":"not ready"}
+  Unknown id: 404 Not Found
+      {"error":"not found"}
+
+DELETE /api/jobs/{id}
+  Accepted: 200 OK
+      {"job_id":1,"status":"cancel_requested"}
+  A queued job is cancelled immediately; a running job is asked to stop
+  and its next slice marks it cancelled. A finished job returns 409:
+      {"error":"already finished"}
+
+GET /api/apps
+  {"applications":[
+    {"id":"prime","description":"Prime number calculation"},
+    {"id":"sort","description":"Integer array sorting"},
+    {"id":"crc16","description":"CRC16 calculation"}]}
+
+
+------------------------------------------------------------------------------
+ 6. ERROR RESPONSES
+------------------------------------------------------------------------------
+
+  404  {"error":"not found"}          unknown job id
+  400  {"error":"bad request"}        malformed JSON, unknown app,
+                                      unsupported path
+  409  {"error":"not ready"}          result requested before completion
+  409  {"error":"already finished"}   cancel after completion
+  413  {"error":"body too large"}     POST body over 767 bytes
+  500  {"error":"route failed"}        BASIC route error/timeout
+  503  {"error":"queue full"}         8 retained jobs, none finished
+  503  {"error":"route busy"}         interactive BASIC is running
+
+An unknown /api/* path (not a job route) still returns HTTP/1.0 404 and
+the plain-text body "not found".
+
+
+------------------------------------------------------------------------------
+ 7. LIMITS AND SEMANTICS
+------------------------------------------------------------------------------
+
+* Retention: 8 jobs. Ids are monotonic and never reused. When the table is
+  full, the oldest completed/cancelled entry is recycled; if every entry
+  is queued/running, POST returns 503.
+* Request body: 767 bytes maximum, balanced-brace JSON, ~6.6 s timeout.
+  Content-Length is not required by the guest; it reads until the object
+  closes.
+* Persistence: none. The job table is in RAM and is lost on reboot.
+* Concurrency: one running job. Queue order is ascending job id.
+* The pump advances while some task waits for input. A guest stuck in a
+  CPU-bound command delays jobs; they resume afterwards.
+* No authentication and no TLS. Use it on a trusted LAN or behind a proxy.
+
+
+------------------------------------------------------------------------------
+ 8. CURL EXAMPLES
+------------------------------------------------------------------------------
+
+Set the base URL (Linux, macOS, Git Bash):
+
+    BASE=http://192.168.1.16
+    # local harness:
+    # BASE=http://127.0.0.1:8080
+
+Read a system endpoint:
+
+    curl -s "$BASE/api/system"
+
+Show the status line and headers too:
+
+    curl -i "$BASE/api/version"
+
+List applications:
+
+    curl -s "$BASE/api/apps"
+
+Queue a prime job (compact JSON):
+
+    curl -s -X POST "$BASE/api/jobs" \
+         -H "Content-Type: application/json" \
+         -d '{"app":"prime","params":{"limit":1000}}'
+
+Response:
+
+    {"job_id":1,"status":"queued"}
+
+The HTTP status for that response is 202. Ask curl to show it:
+
+    curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/api/jobs" \
+         -H "Content-Type: application/json" \
+         -d '{"app":"prime","params":{"limit":1000}}'
+
+Queue a sort job (16 elements, seed 7) and a CRC job:
+
+    curl -s -X POST "$BASE/api/jobs" -H "Content-Type: application/json" \
+         -d '{"app":"sort","params":{"limit":16,"seed":7}}'
+
+    curl -s -X POST "$BASE/api/jobs" -H "Content-Type: application/json" \
+         -d '{"app":"crc16","params":{"limit":100}}'
+
+Sort a list of strings (the sorted list is the result):
+
+    curl -s -X POST "$BASE/api/jobs" -H "Content-Type: application/json" \
+         -d '{"app":"sort","params":{"values":["apple","pie","banana"]}}'
+
+    curl -s "$BASE/api/jobs/1"
+    # {"job_id":1,"app":"sort","status":"completed",
+    #  "result":{"count":3,"values":["apple","banana","pie"]},
+    #  "execution_ticks":1}
+
+    curl -s "$BASE/api/jobs/1/result"
+    # {"job_id":1,"result":{"count":3,"values":["apple","banana","pie"]}}
+
+POST to a BASIC route (registered with API ROUTE):
+
+    curl -s -X POST "$BASE/api/echo" \
+         -H "Content-Type: application/json" \
+         -d '{"x":1}'
+    # {"m":"POST","blen":7}
+
+    curl -s -X POST "$BASE/api/echo" -d 'hello'
+    # {"m":"POST","blen":5}    (non-JSON body: ~1.6 s wait)
+
+    curl -s "$BASE/api/routes"
+    # {"routes":["/api/demo","/api/echo"]}
+
+    curl -s "$BASE/api" | grep -o '/api/echo'
+
+Checksum supplied bytes with CRC16:
+
+    curl -s -X POST "$BASE/api/jobs" -H "Content-Type: application/json" \
+         -d '{"app":"crc16","params":{"data":"hello"}}'
+    # result: {"crc":53870}
+
+    curl -s -X POST "$BASE/api/jobs" -H "Content-Type: application/json" \
+         -d '{"app":"crc16","params":{"values":["ab","cd"]}}'
+    # result: {"crc":11510}  (CRC of "abcd")
+
+List jobs:
+
+    curl -s "$BASE/api/jobs"
+
+Fetch one job (replace 1 with the job_id from POST):
+
+    curl -s "$BASE/api/jobs/1"
+
+Fetch the result:
+
+    curl -s "$BASE/api/jobs/1/result"
+
+Cancel a job:
+
+    curl -s -X DELETE "$BASE/api/jobs/1"
+
+Read the user list (names only):
+
+    curl -s "$BASE/api/users"
+
+Read every system endpoint in one loop:
+
+    for p in system tasks memory who whoami ps users speed time \
+             version status chat apps; do
+        printf "%-8s " "$p"
+        curl -s "$BASE/api/$p"
+    done
+
+Poll a job until it finishes:
+
+    while :; do
+        out=$(curl -s "$BASE/api/jobs/1")
+        echo "$out"
+        echo "$out" | grep -q '"status":"\(queued\|running\)"' || break
+        sleep 0.3
+    done
+    curl -s "$BASE/api/jobs/1/result"
+
+Error examples:
+
+    curl -s -o /dev/null -w "%{http_code}\n" "$BASE/api/jobs/999"
+    # 404
+
+    curl -s -X POST "$BASE/api/jobs" -H "Content-Type: application/json" \
+         -d '{"app":"nope"}'
+    # {"error":"bad request"}
+
+Windows note: in Windows PowerShell, "curl" is an alias for
+Invoke-WebRequest. Use "curl.exe" to run the real curl, or use the
+PowerShell examples in the next section.
+
+
+------------------------------------------------------------------------------
+ 9. POWERSHELL EXAMPLES (5.1 and 7)
+------------------------------------------------------------------------------
+
+Set the base URL:
+
+    $base = "http://192.168.1.16"
+    # local harness:
+    # $base = "http://127.0.0.1:8080"
+
+GET a JSON endpoint. Invoke-RestMethod parses the JSON for you:
+
+    Invoke-RestMethod -Uri "$base/api/system" -Method Get
+
+Show the raw body and headers:
+
+    $r = Invoke-WebRequest -Uri "$base/api/version" -Method Get
+    $r.StatusCode
+    $r.Headers["X-API-Version"]
+    $r.Content
+
+List applications:
+
+    (Invoke-RestMethod -Uri "$base/api/apps" -Method Get).applications |
+        Format-Table id, description
+
+Queue a prime job. Build the body with ConvertTo-Json -Compress so it is
+small and has no formatting newlines:
+
+    $body = @{ app = "prime"; params = @{ limit = 1000 } } |
+            ConvertTo-Json -Compress
+    $job = Invoke-RestMethod -Uri "$base/api/jobs" -Method Post `
+            -ContentType "application/json" -Body $body
+    $job
+    # job_id status
+    # ------ ------
+    #      1 queued
+
+The literal JSON string also works (single quotes avoid interpolation):
+
+    $job = Invoke-RestMethod -Uri "$base/api/jobs" -Method Post `
+            -ContentType "application/json" `
+            -Body '{"app":"prime","params":{"limit":1000}}'
+
+Queue the other applications:
+
+    $s = @{ app = "sort";  params = @{ limit = 16; seed = 7 } } |
+         ConvertTo-Json -Compress
+    Invoke-RestMethod -Uri "$base/api/jobs" -Method Post `
+        -ContentType "application/json" -Body $s
+
+    $c = @{ app = "crc16"; params = @{ limit = 100 } } |
+         ConvertTo-Json -Compress
+    Invoke-RestMethod -Uri "$base/api/jobs" -Method Post `
+        -ContentType "application/json" -Body $c
+
+Sort a list of strings:
+
+    $s = @{ app = "sort"; params = @{ values = @("apple","pie","banana") } } |
+         ConvertTo-Json -Compress
+    $job = Invoke-RestMethod -Uri "$base/api/jobs" -Method Post `
+            -ContentType "application/json" -Body $s
+    Start-Sleep -Milliseconds 500
+    (Invoke-RestMethod -Uri "$base/api/jobs/$($job.job_id)/result").result
+
+CRC16 over supplied bytes:
+
+    $c = @{ app = "crc16"; params = @{ data = "hello" } } |
+         ConvertTo-Json -Compress
+    Invoke-RestMethod -Uri "$base/api/jobs" -Method Post `
+        -ContentType "application/json" -Body $c
+
+POST to a BASIC route:
+
+    $body = @{ x = 1 } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Uri "$base/api/echo" -Method Post `
+        -ContentType "application/json" -Body $body
+
+    # literal JSON body:
+    Invoke-RestMethod -Uri "$base/api/echo" -Method Post `
+        -ContentType "application/json" -Body '{"x":1}'
+
+    # list routes:
+    Invoke-RestMethod -Uri "$base/api/routes" -Method Get
+
+List jobs:
+
+    (Invoke-RestMethod -Uri "$base/api/jobs" -Method Get).jobs |
+        Format-Table job_id, app, status
+
+Fetch one job:
+
+    $j = Invoke-RestMethod -Uri "$base/api/jobs/1" -Method Get
+    $j
+    $j.result
+
+Fetch the result only:
+
+    Invoke-RestMethod -Uri "$base/api/jobs/1/result" -Method Get
+
+Cancel a job:
+
+    Invoke-RestMethod -Uri "$base/api/jobs/1" -Method Delete
+
+Poll until the job is no longer queued or running:
+
+    do {
+        Start-Sleep -Milliseconds 300
+        $j = Invoke-RestMethod -Uri "$base/api/jobs/1" -Method Get
+        $j.status
+    } while ($j.status -eq "queued" -or $j.status -eq "running")
+    $j
+
+End-to-end example (queue, wait, print result):
+
+    $job = Invoke-RestMethod -Uri "$base/api/jobs" -Method Post `
+             -ContentType "application/json" `
+             -Body '{"app":"prime","params":{"limit":1000}}'
+    do {
+        Start-Sleep -Milliseconds 300
+        $d = Invoke-RestMethod -Uri "$base/api/jobs/$($job.job_id)" -Method Get
+    } while ($d.status -eq "queued" -or $d.status -eq "running")
+    $d
+
+Error handling. Invoke-RestMethod throws on 4xx/5xx in PowerShell 5.1:
+
+    try {
+        Invoke-RestMethod -Uri "$base/api/jobs/999" -Method Get
+    } catch {
+        $code = $_.Exception.Response.StatusCode.value__
+        $body = $_.ErrorDetails.Message
+        Write-Host "HTTP $code $body"
+    }
+
+PowerShell 7 can return the error response instead of throwing:
+
+    Invoke-RestMethod -Uri "$base/api/jobs/999" -Method Get -SkipHttpErrorCheck
+
+Show the HTTP status of a POST without parsing the body:
+
+    try {
+        $r = Invoke-WebRequest -Uri "$base/api/jobs" -Method Post `
+             -ContentType "application/json" `
+             -Body '{"app":"prime","params":{"limit":1000}}'
+        $r.StatusCode
+    } catch {
+        $_.Exception.Response.StatusCode.value__
+    }
+
+
+------------------------------------------------------------------------------
+10. RECOVERY: RELOADING OR DISABLING API.SYS
+------------------------------------------------------------------------------
+
+API.SYS is an overlay loaded from C:\API.SYS.  It can be reloaded or
+disabled from the UMIX shell without rebooting:
+
+    API OFF        stop serving /api (no reload; the overlay is not entered)
+    API ON         reload C:\API.SYS and re-enable /api
+    API RELOAD     same as API ON
+    API            same as API ON
+
+Run it at the shell prompt (console, or a serial session logged on as a
+user).  Examples:
+
+    * API OFF
+    API UPDATED
+    * API ON
+    API.SYS V6 - JOBS+STR
+    API UPDATED
+
+What it does:
+
+  API OFF   clears the kernel's api_ok/job_ok flags.  The kernel answers
+            /api with 404 and never enters the overlay; the job pump stops.
+            The rest of UMIX is unaffected.  Use this when the overlay is
+            misbehaving but the shell is alive.
+  API ON    disables the pump, re-reads C:\API.SYS into 0x9000, re-runs its
+            init call (the banner), and re-registers the job pump.
+
+Limits and caveats:
+
+  * API ON resets the overlay's state: the job table, retained results and
+    the request lock are cleared.  Queued/completed jobs are lost.
+  * It only works while the kernel and shell are alive (interrupts and
+    scheduler running).  If the guest is hard-frozen, only a reboot helps.
+  * Run it while no HTTP request is in flight.  If a request is stuck,
+    close that client/session first, then API ON.
+  * API OFF does not kill a task already inside the overlay; it only stops
+    new requests from entering it.
+  * After any guest reboot, the serial bridge still has stale sessions.
+    Restart tools/serial_mux.py (or reconnect) so the mux handshake is
+    fresh; otherwise you can see an old prompt that does not respond.
+
+Faults are no longer silent.  UMIX.SYS installs INT 0 (divide error) and
+INT 6 (invalid opcode) handlers: a fault prints
+
+    PANIC: DIVIDE ERROR - REBOOT
+    PANIC: INVALID OPCODE - REBOOT
+
+and halts, instead of resetting the machine.  If you see a PANIC line,
+note the request that preceded it and report that line.
+
+------------------------------------------------------------------------------
+11. TROUBLESHOOTING
+------------------------------------------------------------------------------
+
+"Connection refused"
+    Nothing is listening. Start serial_mux.py with --http-listen, and make
+    sure no firewall blocks the port.
+
+"Received HTTP/0.9" or a truncated / reordered body
+    A stale API.SYS or kernel. Rebuild and deploy the matched V0R124 pair
+    (boot image + UMIX.SYS) and copy the new API.SYS to C:\API.SYS. The
+    kernel only calls the job pump when the overlay advertises it at load
+    time, so mismatched files are detectable.
+
+"no ACK for terminal N" in the bridge log
+    The guest is not in mux mode. Uncomment "MUX ON" in STARTUP.JCL and
+    reboot, or the guest is still at the boot prompt.
+
+400 on POST
+    The body was malformed or the app name is unknown. Send compact JSON
+    such as {"app":"prime","params":{"limit":1000}}. The body must close
+    its braces and stay under 767 bytes.
+
+413 on POST
+    The body exceeded 767 bytes. Remove whitespace (ConvertTo-Json
+    -Compress) and keep parameter names short.
+
+503 on POST
+    Eight jobs are retained and none has finished. Wait for or cancel a
+    job, then retry.
+
+409 on GET .../result
+    The job has not completed yet, or it was cancelled. Poll
+    /api/jobs/{id} and check "status".
+
+Empty or stale /api/users names
+    The API returns the 10-byte name field only. It never returns a
+    password. If a name looks truncated, that is the field width.
+
+Windows: "curl" behaves like Invoke-WebRequest
+    Use curl.exe for the real curl, or use the Invoke-RestMethod examples.
+==============================================================================
