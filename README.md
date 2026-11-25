@@ -1,91 +1,295 @@
-# UMIX/86
+# UMIX/86 — user guide
 
-Mostly coded by **DeepSeek-V4.1-Flash**.
+## Project philosophy and disclaimer
 
-A small 16-bit, real-mode, preemptive multitasking operating system for the
-**8086/8088 PC/XT class**, written in 8086 assembly. It boots from a 360 KB
-floppy, runs in 640 KB, and provides a shell, a BASIC interpreter, a JSON API,
-a static web server, TFTP, a shared chat room, and framed serial terminals over
-a host-side multiplexer bridge.
+UMIX/86 is a personal, experimental retrocomputing project, mostly coded by **DeepSeek-V4.1-Flash**.
+
+The idea was simple: to explore what could be achieved by combining modern AI capabilities with the hardware constraints of an 8088 PC, 640 KB of RAM and a 360 KB floppy disk.
+
+The focus is on system design, experimentation, problem-solving, nostalgia and, above all, having fun. AI-assisted development is a deliberate choice and part of the experiment itself.
+
+My technical background, professional experience and other projects are documented elsewhere. As for diving into every single implementation detail, I'm probably getting too old for that. Maybe when I retire. 😉
+
+UMIX/86 is neither an attempt to reinvent UNIX nor a demonstration of what AI can replace. It is simply an exploration of what modern tools can bring to vintage computing.
+
+**There are many ways to enjoy retrocomputing. This happens to be mine.**
+
+Constructive technical criticism, bug reports, suggestions and contributions are always welcome.
+
+UMIX/86 is experimental software, provided without guarantees of stability, security or correctness, and is not intended for production use.
+
+And yes, the 8088 is still online... when it doesn't crash!
+
+## Overview
+
+UMIX/86 is a small 16-bit, real-mode, multi-tasking operating system for
+8086/8088 **PC/XT-class** machines. It boots from a 360 KB floppy, runs in
+640 KB, and gives you:
+
+- a text console and a command shell
+- a full-screen editor (CGA/Hercules) and a BASIC interpreter
+- a job-control language and loadable programs
+- up to ten serial terminals over one serial link (**MUX**)
+- a web server, a JSON API, a TFTP server and a chat room
+
+Everything runs on the guest. A small program on a modern PC bridges the serial
+link to ordinary TCP ports for terminals and the web.
 
 Current build: **V0R138** (API version 13).
 
-## What's inside
+## 1. What you need
 
-| path | contents |
-|---|---|
-| `src/` | boot sector, kernel, `UMIX.SYS`, `TCP.SYS`, `API.SYS`, demo programs |
-| `tools/` | image builders, the `serial_mux.py` bridge, TFTP/upload clients, the browser API explorer, the bridge tests |
-| `INDEX.HTM`, `UMX002.HTM`..`UMX007.HTM` | the in-guest system guide (overview, OS, MUX/TCP, services/BASIC, terminals, API, chat) |
-| `chat_local.htm`, `chat_umix.htm` | browser chat clients |
-| `docs/` | user manual, API reference, chat notes, Windows/real-hardware guide |
+- An 8086/8088 PC/XT-class machine with 640 KB. A **Commodore PC-III** is a
+  good example: 8088, CGA/Hercules, 360 KB 5.25" drive.
+- CGA, MDA or Hercules text output (auto-detected).
+- A 360 KB 5.25" floppy drive, or a Gotek/USB floppy emulator.
+- Optional: a hard disk, CF card or IDE image for the C: volume.
+- For serial terminals and the web: a null-modem cable and a PC running
+  Python 3, or QEMU.
 
-## Requirements
+## 2. Making the disks
 
-- `nasm` (flat-binary 8086)
-- Python 3.8+ (standard library only)
-- QEMU (or a 360 KB floppy / Gotek for real hardware)
+### Boot floppy
 
-## Build
+Write `build/umix86-360.img` to a 360 KB 5.25" floppy:
+
+- DOS: `rawrite` or `FDIMAGE`
+- Linux: `dd if=build/umix86-360.img of=/dev/fd0 bs=512`
+- Gotek: copy the `.img` to the USB stick and select it
+
+The floppy holds the boot sector and the 64 KB kernel. Nothing else is needed
+on A:.
+
+### C: volume
+
+The kernel mounts a FAT12/FAT16 volume as C: and loads its programs from the
+root. Use a DOS-formatted hard disk or CF card, or write `build/testc.img` to a
+CF/IDE image. Copy these **8.3** files into the root:
+
+    UMIX.SYS  API.SYS  STARTUP.JCL  README.TXT
+    INDEX.HTM  UMX002.HTM .. UMX007.HTM  EXPLORER.HTM  CHAT.HTM
+    APIHELLO.BAS  ECHO.BAS  HELLO1.SYS  HELLO2.SYS  SPIN.SYS  JOB.JCL
+
+`TCP.SYS` and `CHAT.SYS` are optional (see the MUX section). `tools/mkfat.py`
+builds a ready C: image for QEMU or a CF card:
+
+```sh
+UMIX_MUX=1 python3 tools/mkfat.py      # -> build/testc.img (21 MB)
+```
+
+### STARTUP.JCL
+
+At boot the kernel runs `C:\STARTUP.JCL`, one command per line. Lines starting
+with `;`, `#` or `//` are comments. A typical file:
+
+```
+MUX ON
+;WRITE ON
+;TFTP ON
+;CHAT OFF
+API ROUTE /api/demo APIHELLO.BAS
+API ROUTE /api/echo ECHO.BAS
+```
+
+- `MUX ON` is needed for serial terminals and the web.
+- `WRITE ON` allows writing to C:.
+- `TFTP ON` starts the TFTP server.
+- `CHAT OFF` disables the chat.
+
+## 3. First boot
+
+1. Put the boot floppy in A: and select A: as the boot device.
+2. Power on. The kernel prints its banner, mounts C:, loads `UMIX.SYS` and
+   `API.SYS`, and runs `STARTUP.JCL`.
+3. The CGA/MDA/Hercules console shows the prompt.
+
+Without a C: volume the kernel still comes up with its built-in shell
+(`HELP ECHO CLS MEM TIME VER SYS REBOOT HALT`), but the C: commands, editor,
+BASIC, API, web and chat are not available.
+
+The console has no login. Serial sessions ask for `USERID:` and `PASSWORD:`.
+Default accounts:
+
+    USER   / USER      ordinary user
+    SYSTEM / SYS1      privileged user
+
+Change them after the first boot (`USER`, `USERS`).
+
+## 4. Using the system
+
+### Drives
+
+    A:  the boot floppy
+    C:  the hard disk / CF (FAT12/16, 8.3 names)
+    M:  a RAM disk (lost on reboot)
+
+Names are 8.3 and case-insensitive; a file is at most 64 KB. `WRITE ON` is
+required before anything writes to C:.
+
+### Main shell commands
+
+Files:
+
+    DIR  TYPE  COPY  DEL  REN  EDIT  DRIVE  WRITE
+
+Programs:
+
+    RUN file.SYS   BASIC   JCL file.JCL   SYS
+
+Sessions and users:
+
+    USER  USERS  WHO  PS  PRIV
+
+System and link:
+
+    HELP  CLS  MEM  TIME  VER  SPEED  BAUD  QUANTUM
+    WEB  WEBLOG  TFTP  TFTPLOG  CHAT  API  PANEL
+    REBOOT  HALT  BYE
+
+`HELP` prints the full list. A few commands are console-only, or need
+`SYSTEM` with `PRIV ON`: `WEB`, `WEBLOG`, `TFTP`, `TFTPLOG`, `CHAT`,
+`QUANTUM`, `BAUD`, `WRITE`, `DRIVE`, `PRIV`, and user administration.
+`PRIV ON` itself is set from the console.
+
+### Panel and editor
+
+`PANEL ON` / `PANEL OFF` toggles the mainframe-style full-screen panel on the
+console you are typing on: the CGA/Hercules layout, or the ANSI panel on a
+serial terminal. `PANEL` alone reports the current state.
+
+On the CGA/Hercules console, `EDIT FILE` opens a **full-screen editor** (a
+100 x 80 buffer). Arrows/Home/End/PgUp/PgDn move, Ins toggles insert,
+Del/Backspace edit, Enter moves down, Tab inserts four spaces, Ctrl-N inserts
+a line, Ctrl-Y deletes a line, F1 saves, F2/Esc quits. Saving needs
+`WRITE ON`.
+
+A serial session gets the ANSI panel and the chat display, but `EDIT` there
+answers `EDIT: CGA CONSOLE ONLY`; the full-screen editor is a CGA/Hercules
+feature. On the CGA/Hercules console `PANEL ON` restores the mainframe panel
+after `PANEL OFF` or `CLS`.
+
+### BASIC
+
+`BASIC` starts a line-numbered, GWBASIC-style interpreter: `FOR/NEXT`,
+`IF/THEN/ELSE`, `GOTO`, `GOSUB`, `INPUT`, `PRINT`, `DIM`, integer arithmetic,
+strings, and `LOAD`/`SAVE` of `.BAS` files. Limits: 61-character lines,
+16-bit integers, 63-character strings.
+
+### JCL and programs
+
+`JCL FILE.JCL` runs a command script. `RUN FILE.SYS` loads a program into a
+free program slot and runs it. `SYS` reloads the shell overlay after changing
+`UMIX.SYS`.
+
+### More than one terminal
+
+The console is one terminal. To have several at once, or to reach the web
+server, use the MUX link and the host bridge.
+
+## 5. MUX and the protocol
+
+### What MUX is
+
+One serial port normally carries one terminal. **MUX** multiplexes the link: up
+to ten independent terminal sessions, plus web requests, uploads and TFTP,
+share the same serial cable.
+
+The guest speaks a small framed protocol. On the PC side a program called the
+**bridge** (`tools/serial_mux.py`) speaks that protocol on the serial port and
+offers ordinary TCP services:
+
+    127.0.0.1:2323   terminal sessions
+    127.0.0.1:8080   the guest's web server
+    127.0.0.1:8081   file upload (optional)
+    127.0.0.1:6969   TFTP relay (optional, with --ip)
+
+You do not talk to the guest's serial port directly; you connect a terminal or
+a browser to the bridge.
+
+### The protocol at a glance
+
+The serial link carries frames, not raw text. Each frame has:
+
+- a **type**: `OPEN` (start a session), `DATA` (terminal bytes), `CLOSE`
+  (session ended), `ACK`, `BUSY`, `ERROR`
+- a **terminal id**: `1..10` for serial sessions, `0` for the guest console
+  log, `0xFE` for the IP/TFTP channel
+- a **payload**, delimited by the frame length and protected by a checksum
+
+`OPEN` also carries the **application id**: `1` console/shell, `2` web,
+`3` upload.
+
+That is the whole contract. The bridge implements it; you never type frames by
+hand. If you write your own bridge, match these frame types and ids.
+
+### Connecting a real PC
+
+1. Connect the PC's serial port to a modern PC with a null-modem cable at
+   9600 8N1.
+2. On the modern PC:
+
+```sh
+python3 tools/serial_mux.py --serial /dev/ttyUSB0 --baud 9600 \
+    --listen 127.0.0.1:2323 --http-listen 127.0.0.1:8080
+```
+
+3. `telnet 127.0.0.1 2323` for a terminal, and
+   <http://127.0.0.1:8080/> for the web.
+
+Add `--ip --tftp-listen 127.0.0.1:6969` for TFTP, and
+`--upload-listen 127.0.0.1:8081` for uploads.
+
+### MUX or TCP, not both
+
+`TCP.SYS` is the alternative to MUX: it turns the same serial link into a SLIP
+link with a TCP/IP stack and its own HTTP server. Load one or the other. MUX is
+what you want for terminals, the guest web server, the API and chat.
+
+## 6. Quick test under QEMU
 
 ```sh
 ./build.sh
-```
-
-Writes `build/umix86-360.img` (360 KB boot floppy), `build/umix86.img`
-(512-byte boot + 64 KB kernel area), `build/umix.sys`, `build/tcp.sys`,
-`build/api.sys`.
-
-Build the C: disk image, then start the guest and the host bridge:
-
-```sh
 UMIX_MUX=1 python3 tools/mkfat.py
 
 qemu-system-i386 -machine isapc -m 1M \
   -drive file=build/umix86-360.img,format=raw,if=floppy \
   -drive file=build/testc.img,format=raw,if=none,id=d0 \
   -device ide-hd,drive=d0,cyls=615,heads=4,secs=17 -boot a -display none \
-  -serial unix:/tmp/umix-ser.sock,server=on,wait=off &
+  -serial unix:/tmp/umix.sock,server=on,wait=off &
 
-python3 tools/serial_mux.py --serial unix:/tmp/umix-ser.sock \
-  --listen 127.0.0.1:2323 --http-listen 127.0.0.1:8080
+python3 tools/serial_mux.py --serial unix:/tmp/umix.sock \
+    --listen 127.0.0.1:2323 --http-listen 127.0.0.1:8080
 ```
 
-Then:
+Open <http://127.0.0.1:8080/>. `run.sh` boots the floppy on stdio instead.
 
-- terminal: `telnet 127.0.0.1 2323` (login `USER` / `USER`, or `SYSTEM` / `SYS1`)
-- system guide: <http://127.0.0.1:8080/>
-- API explorer: <http://127.0.0.1:8080/EXPLORER.HTM>
-- chat: <http://127.0.0.1:8080/CHAT.HTM>
+## 7. Services
 
-`run.sh` boots the floppy headless on stdio for a quick console test.
+- **Web server**: on by default while MUX is on. `/` is `INDEX.HTM`; any other
+  `/NAME.EXT` is served from the C: root if it exists. Pages must be under
+  4 KB.
+- **JSON API**: `API.SYS`; endpoints under `/api` (system, tasks, memory, who,
+  ps, users, speed, time, version, status, apps, jobs, routes, chat). A browser
+  explorer is at `/EXPLORER.HTM`.
+- **TFTP**: UDP 69, GET and PUT; `TFTP ON` required, and PUT also needs
+  `WRITE ON`. Use a client that negotiates a block size of at most 192
+  (`tools/umix_tftp.py`, `atftp`); Windows `tftp.exe` and `curl` cannot.
+- **Chat**: type `CHAT` at `USERID:`, or open `/CHAT.HTM`. Browser and terminal
+  users share one room. `CHAT OFF` disables both.
+- **System guide**: `/`, `/UMX002.HTM` .. `/UMX007.HTM`, `/EXPLORER.HTM`.
 
-## Build switches (`tools/mkfat.py`)
+## 8. Notes and troubleshooting
 
-| variable | effect |
-|---|---|
-| `UMIX_MUX=1` | MUX ON (needed for terminals, web and chat over the bridge) |
-| `UMIX_TCP=1` | SLIP + TCP ON (`TCP.SYS` HTTP instead of MUX) |
-| `UMIX_TFTP=1` | `WRITE ON` + `TFTP ON` in `STARTUP.JCL` |
-| `UMIX_CHAT=0` | `CHAT OFF` at boot (disables terminal and HTTP chat) |
-| `UMIX_INDEX=FILE` | use another file as `INDEX.HTM` |
-
-## Tests
-
-```sh
-cd tools && python3 -m unittest test_serial_mux
-```
-
-## Notes
-
-- MUX and `TCP.SYS` are mutually exclusive: both use the `0x2900` window and
-  the same serial link.
-- The web server, JSON API and chat are unauthenticated — keep the bridge on a
+- Default serial speed is 9600. Change it with `BAUD` (console) and restart
+  the bridge with the same `--baud`.
+- `WRITE ON` before writing to C:.
+- The web server sends at most 4000 bytes per file; larger files are not
+  served.
+- TFTP needs `blksize <= 192`; `tools/umix_tftp.py` does this for you.
+- If the web or chat answers 503, check `MUX ON`, `CHAT ON`, and that SLIP/TCP
+  is off.
+- The web server, API and chat have no authentication. Keep the bridge on a
   trusted network.
-- Static pages served by the guest must stay under 4 KB.
-- TFTP needs a client that negotiates a block size ≤ 192 (`tools/umix_tftp.py`,
-  `atftp`); the Windows `tftp.exe` and `curl` cannot.
-
-## Documentation
-
-- [User manual](docs/UMIX86.md)
+- On a Commodore PC-III use a 360 KB image; do not write a 1.44 MB image to a
+  360 KB drive.
+- Keep `UMIX.SYS` from the same build as the boot floppy.
